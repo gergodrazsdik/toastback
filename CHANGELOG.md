@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-14
+
 ### Changed
 
 - The README installs with download, check, review, run (`install.sh` plus `SHA256SUMS`) instead of piping
@@ -120,5 +122,6 @@ First public release. (A v0.1.0 test release was published and withdrawn; its `i
 - Clicks are accepted only with the notification's random 128-bit token; commands never come from the activation
   URI, and notification data reaches callbacks as environment variables, never pasted into a command line.
 
-[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.0.0...HEAD
+[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/gergodrazsdik/toastback/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/gergodrazsdik/toastback/releases/tag/v1.0.0
