@@ -23,7 +23,10 @@ streams always arrive as pipe handles.
 
 Fix (`src/console.rs`): at startup, except in `activate`, every stream without a handle is pointed at the
 parent's console (`CONIN$`/`CONOUT$` + `SetStdHandle`). Pipes are left alone, so captured output never also
-goes to the console. No `toastback-cli.exe` is needed for WSL.
+goes to the console. The console WSL relays to has `DISABLE_NEWLINE_AUTO_RETURN` set, so a bare
+`\n` didn't return to column 0 (staircase output). `console.rs` clears that flag while toastback runs and
+restores the original mode on exit, because the mode belongs to the terminal's shared screen buffer.
+That's also why `main` returns on clap errors instead of calling `exit()`. No `toastback-cli.exe` is needed for WSL.
 
 Remaining caveat: interactive **cmd/PowerShell don't wait for GUI-subsystem exes**. The output lands after the
 next prompt, and `$LASTEXITCODE` isn't set. `$id = toastback.exe …` (captured) waits. If interactive Windows-side

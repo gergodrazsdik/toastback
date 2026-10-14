@@ -182,12 +182,20 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    // the protocol handler has no terminal; everything else may have been started from one
+    // The protocol handler has no terminal; everything else may have been started from one.
+    // The guard restores the console mode on drop, so every path below must return, not exit().
     #[cfg(windows)]
-    if std::env::args_os().nth(1).is_none_or(|a| a != "activate") {
-        console::attach_missing_streams();
-    }
-    let cli = Cli::parse_with_default(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    let _console = std::env::args_os()
+        .nth(1)
+        .is_none_or(|a| a != "activate")
+        .then(console::attach_missing_streams);
+    let cli = match Cli::parse_with_default(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let _ = e.print();
+            return ExitCode::from(e.exit_code() as u8);
+        }
+    };
     match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
