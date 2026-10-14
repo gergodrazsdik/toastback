@@ -1,0 +1,8 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+# /ignore:4099: the MSVC CRT libs reference PDBs that xwin does not ship
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/ignore:4099"]
+# `cargo xwin run`/`test` start the .exe through WSL interop
+runner = "/usr/bin/env"

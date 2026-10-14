@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- placeholder icon: a bell on a rounded square -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#e8762b"/>
+  <path d="M128 44c-8 0-14 6-14 14v4c-26 6-44 30-44 58v34l-16 22v10h148v-10l-16-22v-34c0-28-18-52-44-58v-4c0-8-6-14-14-14z" fill="#fff"/>
+  <path d="M106 196a22 22 0 0 0 44 0z" fill="#fff"/>
+</svg>

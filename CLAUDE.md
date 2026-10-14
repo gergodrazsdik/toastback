@@ -2,14 +2,22 @@
 
 Async Windows toast notifications with callbacks, meant to be driven from WSL and scripts. Rust, built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. Public repo: https://github.com/gergodrazsdik/toastback (GPL-3.0-or-later).
 
+The plan is `PLAN.md`: §2 holds the locked decisions, §10 the milestones, §13 the working agreement. Follow it. Spike results and later decisions go in `docs/decisions/`.
+
 ## Commands
 
-- `just build` / `just check` / `just run <args>`: Windows build via `cargo xwin` (target pinned in `rust-toolchain.toml`).
-- `just lint`: `cargo fmt --check` and clippy for the Windows target with `-D warnings`. Run before calling work done.
-- `just test`: host-target unit tests. Code behind `#[cfg(windows)]` only compiles for the Windows target: check it with `just check`/`just lint`, and smoke-test the `.exe` by running it from WSL (Windows interop).
+- `just build` / `just run <args>`: Windows release build via `cargo xwin` (default target in `.cargo/config.toml`, static CRT).
+- `just check` (alias `lint`): `cargo fmt --check`, clippy for the Windows target with `-D warnings`, shellcheck on `scripts/*.sh`. Run before calling work done.
+- `just test`: host-target tests (`cargo test --target x86_64-unknown-linux-gnu`), then the Windows test binary run through WSL interop (cargo-xwin forces `wine` as the runner, so the recipe overrides it).
+- The built `.exe` runs from WSL directly (`target/x86_64-pc-windows-msvc/release/toastback.exe`). It's GUI-subsystem, but stdout, stderr and the exit code still reach WSL.
+- `scripts/make-icon.sh` re-renders `res/icon.png` and `res/icon.ico` from `res/icon.svg` (placeholder icon).
 
 ## Conventions
 
-- Keep Windows-specific code behind `#[cfg(windows)]`; platform-neutral logic (argument parsing, callback plumbing) stays testable on the Linux host.
-- New dependencies with `cargo add`; prefer well-maintained crates (`windows`/`windows-sys` for WinRT/Win32).
-- The plan for the project lives in the plan file the user provides; follow it.
+- Every source file starts with `// SPDX-License-Identifier: GPL-3.0-or-later`.
+- Keep Windows-specific code behind `#[cfg(windows)]`; platform-neutral logic (spec, validation, URI parsing, path conversion) stays testable on the Linux host.
+- `unsafe` only in `toast.rs`, `dialog.rs`, `exec.rs`, `install.rs`, wrapped in small safe functions with `// SAFETY:` comments.
+- Boring, explicit code; no async runtime.
+- Crates: only those in PLAN.md §7 (`windows`, `serde`, `serde_json`, `anyhow`, `clap`, `getrandom`, `embed-resource`). Ask before adding others; add with `cargo add`, and add `windows` features as needed.
+- Ask before changing a locked decision (§2). Never run `just release` or push tags unasked.
+- After each milestone: `just check && just test && just install`, then give the user the manual steps for the acceptance criteria.
