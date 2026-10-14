@@ -15,7 +15,9 @@ die() {
 
 version=${1:-}
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: scripts/bump.sh VERSION (like 1.2.0)"
-[ -f CHANGELOG.md ] && [ -f Cargo.toml ] || die "run from the repository root"
+if [ ! -f CHANGELOG.md ] || [ ! -f Cargo.toml ]; then
+  die "run from the repository root"
+fi
 ! grep -q "^## \[$version\]" CHANGELOG.md || die "CHANGELOG.md already has a [$version] section"
 
 # the [Unreleased] section must say what changed
