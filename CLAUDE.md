@@ -21,6 +21,12 @@ The plan is `PLAN.md`: §2 holds the locked decisions, §10 the milestones, §13
 - `unsafe` only in `toast.rs`, `dialog.rs`, `exec.rs`, `install.rs`, `console.rs`, `registry.rs`, wrapped in small safe functions with `// SAFETY:` comments.
 - Boring, explicit code; no async runtime.
 - Crates: only those in PLAN.md §7 (`windows`, `serde`, `serde_json`, `anyhow`, `clap`, `getrandom`, `embed-resource`). Ask before adding others; add with `cargo add`, and add `windows` features as needed.
-- Ask before changing a locked decision (§2). Never run `just release` or push tags unasked.
+- Ask before changing a locked decision (§2). Never run `just bump`/`just release` or push tags unasked.
+- `main` is protected (ruleset): every change goes through a PR on a branch, merged by squash once CI is green; never
+  push to main. Commit on a branch, push it, `gh pr create`, wait for the checks, then `gh pr merge --squash` when the
+  user agrees.
+- Keep `CHANGELOG.md` current ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)): every user-visible change
+  adds a line under `[Unreleased]` in the same PR. Versions follow semver; release with `just bump X.Y.Z` (PR), then
+  `just release X.Y.Z` after it's merged. See `docs/decisions/005-github.md`.
 - New spec fields or commands: update README.md, add or extend an example in `examples/`, and add a step to `docs/manual-test.md`.
 - After each milestone: `just check && just test && just install`, then give the user the manual steps for the acceptance criteria.

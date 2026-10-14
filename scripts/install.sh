@@ -4,7 +4,7 @@
 # against SHA256SUMS and runs `toastback.exe install` for this distro and user.
 #
 #   curl -fsSL https://github.com/gergodrazsdik/toastback/releases/latest/download/install.sh | bash
-#   ... | TOASTBACK_VERSION=v0.1.0 bash          # a specific version
+#   ... | TOASTBACK_VERSION=v1.0.0 bash          # a specific version
 #   ... | bash -s -- --add-to-path                # extra arguments go to `toastback.exe install`
 #
 # Piped into bash, this script *is* bash's stdin. Everything lives in main(), called on the last line,

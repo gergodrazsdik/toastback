@@ -19,7 +19,8 @@ id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
   that must not be missed.
 - Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
 
-Status: v0.1 ([releases](https://github.com/gergodrazsdik/toastback/releases)). The design is in [PLAN.md](PLAN.md) and
+[Releases](https://github.com/gergodrazsdik/toastback/releases) follow [semantic versioning](https://semver.org);
+what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [PLAN.md](PLAN.md) and
 [docs/decisions/](docs/decisions/).
 
 ## Install
@@ -28,7 +29,7 @@ Status: v0.1 ([releases](https://github.com/gergodrazsdik/toastback/releases)). 
 
 ```bash
 curl -fsSL https://github.com/gergodrazsdik/toastback/releases/latest/download/install.sh | bash
-# a specific version:   ... | TOASTBACK_VERSION=v0.1.0 bash
+# a specific version:   ... | TOASTBACK_VERSION=v1.0.0 bash
 # also for PowerShell:  ... | bash -s -- --add-to-path
 ```
 
@@ -213,13 +214,21 @@ Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. `just` lists the reci
 | Recipe | |
 |---|---|
 | `just build` | release build of both exes |
-| `just check` | rustfmt, clippy (Windows target, warnings as errors), shellcheck |
+| `just check` | rustfmt, clippy (Windows target, warnings as errors), shellcheck, yamllint, actionlint |
 | `just test` | unit tests on Linux and on Windows (through WSL interop), then `validate` on every example |
 | `just install` | build and install for the current distro |
-| `just demo` / `just log` | show every example / recent events |
+| `just demo` / `just log` / `just doctor` | show every example / recent events / check the install |
+| `just bump X.Y.Z` / `just release X.Y.Z` | release: open the version-bump PR / after merging it, tag and publish |
 
 Design notes and decisions are in [docs/decisions/](docs/decisions/); the manual test checklist is
 [docs/manual-test.md](docs/manual-test.md).
+
+## Contributing
+
+Issues and pull requests are welcome. `main` only changes through pull requests whose CI (build, Windows tests,
+smoke test) passes; CI for first-time and outside contributors starts after a maintainer approves it. Please add
+a line under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything users would notice. Security problems:
+see [SECURITY.md](SECURITY.md).
 
 ## License
 
