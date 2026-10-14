@@ -3,13 +3,14 @@
 # toastback installer for WSL: downloads the release exes into the Windows temp dir, checks them
 # against SHA256SUMS and runs `toastback.exe install` for this distro and user.
 #
-#   curl -fsSL https://github.com/gergodrazsdik/toastback/releases/latest/download/install.sh | bash
-#   ... | TOASTBACK_VERSION=v1.0.0 bash          # a specific version
-#   ... | bash -s -- --add-to-path                # extra arguments go to `toastback.exe install`
+# Download it with SHA256SUMS from the release, check it (sha256sum -c --ignore-missing SHA256SUMS), read it, run it:
+#   bash install.sh                               # the latest release
+#   TOASTBACK_VERSION=v1.0.0 bash install.sh      # a specific version
+#   bash install.sh --add-to-path                 # extra arguments go to `toastback.exe install`
 #
-# Piped into bash, this script *is* bash's stdin. Everything lives in main(), called on the last line,
-# so bash has read the whole script before anything runs, and Windows commands get </dev/null:
-# interop forwards stdin, and cmd.exe would otherwise swallow the rest of the script.
+# If it's piped into bash anyway, the script *is* bash's stdin. So everything lives in main(), called on the last
+# line, so bash has read the whole script before anything runs, and Windows commands get </dev/null: interop
+# forwards stdin, and cmd.exe would otherwise swallow the rest of the script.
 set -euo pipefail
 
 die() {

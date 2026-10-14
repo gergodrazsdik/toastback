@@ -63,6 +63,7 @@ jobs:
             dist/toastback.exe
             dist/toastback-cli.exe
             dist/toastback-x86_64.zip
+            dist/install.sh
 
       - name: Release notes from CHANGELOG.md
         run: |

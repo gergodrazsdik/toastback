@@ -7,7 +7,8 @@ distro="${WSL_DISTRO_NAME:-}"
 if [ -z "$distro" ]; then
   # WSL sets WSL_DISTRO_NAME only for processes it starts itself (not systemd services, cron, ...):
   # take the name from this distro's root as Windows sees it, \\wsl.localhost\<distro>\
-  root="$(wslpath -w / 2>/dev/null || true)"
+  # (env -u: wslpath fails when the variable is set but empty)
+  root="$(env -u WSL_DISTRO_NAME wslpath -w / 2>/dev/null || true)"
   root="${root%\\}"
   distro="${root##*\\}"
 fi
