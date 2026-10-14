@@ -1,6 +1,7 @@
 {
   "title": "Deploy to production?",
   "body": "Build 1234 passed all checks.",
+  "details": "Commit abc1234 by g: \"Fix the frobnicator\".\n\n412 tests passed, 0 failed. The deploy takes about 3 minutes and can be rolled back.",
   "attribution": "toastback example",
   "buttons": [
     { "id": "deploy", "label": "Deploy", "style": "success",

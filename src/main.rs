@@ -7,6 +7,7 @@ mod activate;
 #[cfg(windows)]
 mod console;
 mod context;
+mod dialog;
 mod exec;
 mod install;
 mod spec;
@@ -179,15 +180,18 @@ enum Command {
     /// Protocol handler for toastback:// URIs (internal)
     #[command(hide = true)]
     Activate { uri: String },
+    /// Show the dialog for a pending notification (internal, started detached by `show`)
+    #[command(name = "__dialog", hide = true)]
+    Dialog { id: String },
 }
 
 fn main() -> ExitCode {
-    // The protocol handler has no terminal; everything else may have been started from one.
+    // The protocol handler and the dialog process have no terminal; anything else may have one.
     // The guard restores the console mode on drop, so every path below must return, not exit().
     #[cfg(windows)]
     let _console = std::env::args_os()
         .nth(1)
-        .is_none_or(|a| a != "activate")
+        .is_none_or(|a| a != "activate" && a != "__dialog")
         .then(console::attach_missing_streams);
     let cli = match Cli::parse_with_default(std::env::args_os()) {
         Ok(cli) => cli,
@@ -253,6 +257,15 @@ fn run(cli: Cli) -> Result<u8> {
                 .collect();
             for e in &events[events.len().saturating_sub(n)..] {
                 print!("{}", format_event(e));
+            }
+            Ok(0)
+        }
+        Command::Dialog { id } => {
+            if let Err(e) = activate::dialog(&store, &id) {
+                let _ = store.log(
+                    "error",
+                    serde_json::json!({ "id": id, "error": format!("{e:#}") }),
+                );
             }
             Ok(0)
         }
@@ -378,10 +391,14 @@ fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, anyhow
             toast::show(&xml, &id, pending.expires_at).map_err(failed)?;
         }
         Mode::Dialog => {
-            let _ = store.remove_pending(&id);
-            return Err(failed(anyhow::anyhow!(
-                "dialog mode is not implemented yet"
-            )));
+            // a separate process shows the dialog, so the caller returns right away
+            let spawned = std::env::current_exe()
+                .map_err(anyhow::Error::from)
+                .and_then(|exe| dialog::spawn_detached(&exe, &["__dialog", &id]));
+            if let Err(e) = spawned {
+                let _ = store.remove_pending(&id);
+                return Err(failed(e));
+            }
         }
     }
     let _ = store.log(

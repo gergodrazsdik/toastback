@@ -1,0 +1,14 @@
+{
+  "mode": "dialog",
+  "title": "Reboot needed",
+  "body": "Updates are installed. Reboot now?",
+  "details": "Save your work first. The reboot takes about 2 minutes.",
+  "scenario": "alarm",
+  "buttons": [
+    { "id": "now", "label": "Reboot now",
+      "run": { "wsl": "echo \"pretend reboot: $TOASTBACK_ACTION\"" } },
+    { "id": "later", "label": "Remind me later",
+      "run": { "wsl": "echo snoozed" } },
+    { "id": "never", "label": "Skip this time" }
+  ]
+}
