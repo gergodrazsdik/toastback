@@ -77,12 +77,12 @@ log n="20":
 [group('release')]
 [confirm('Commit, tag and push this release to GitHub? [y/N]')]
 release version:
-    test -z "$(git status --porcelain)" || { echo "working tree not clean"; exit 1; }
+    test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree not clean"; exit 1; }
     [[ "{{ version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must look like 1.2.3"; exit 1; }
     sed -i '/^\[package\]/,/^\[/ s/^version = ".*"/version = "{{ version }}"/' Cargo.toml
     grep -q '^version = "{{ version }}"$' Cargo.toml || { echo "version not updated in Cargo.toml"; exit 1; }
     cargo xwin build --release --target {{ target }}  # refreshes Cargo.lock
-    git commit -am "release v{{ version }}"
+    git diff --quiet || git commit -am "release v{{ version }}"  # nothing to commit when already at this version
     git tag -a "v{{ version }}" -m "v{{ version }}"
     git push --follow-tags
     sleep 10
