@@ -70,12 +70,16 @@ covered by the smoke job, so here they only need to be checked once.
 
 ## Edge cases
 
-30. **Double click:** in `examples/feedback.json`, a button whose callback takes a while (e.g. `{"wsl": "sleep 10"}`):
-    click it, then click the body or open the details dialog and pick it again. `toastback log` shows one
-    `callback_started` and a `rejected … already handled`.
+30. **Double click:** `examples/deploy.json` has details, so its body opens the details dialog. Click the body to
+    open the dialog, then click **Deploy** on the toast in the notification center (Win+N), then pick **Deploy** in
+    the dialog. `toastback log` shows one `callback_started` and a `rejected … already handled`. (Without a desktop:
+    show it, read its token from `%LOCALAPPDATA%\toastback\pending\<id>.json`, and start two
+    `toastback.exe activate "toastback://act?id=<id>&a=deploy&t=<token>"` at once.)
 31. **Timeout kills the tree:** `{"cmd": "ping -n 600 127.0.0.1", "timeout": "5s"}` gives the "timed out" toast after
     about 5 s, and Task Manager shows no `PING.EXE` left. `{"cmd": "start \"\" notepad"}` finishes at once, and
-    Notepad stays open.
+    Notepad stays open. `{"wsl": "(sleep 8; touch /tmp/tb) & sleep 30", "timeout": "3s"}`: no `/tmp/tb` appears.
+    A callback `{"pwsh": "toastback-cli --mode dialog -t keep; Start-Sleep 60", "timeout": "5s"}`: the dialog stays
+    open after the timeout.
 32. **cmd in a WSL directory:** `toastback` with a `cmd` button and `"cwd": "/home/<you>"` exits 2 with "cmd can't run
     in \\wsl.localhost\…". A relative `"cwd": "sub"` on a `wsl` button runs in `$PWD/sub`.
 33. **Text starting with a dash:** `toastback -t cmake -m "-- Build files have been written"` shows that body.

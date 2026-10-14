@@ -73,7 +73,7 @@ protocol activation. stdout/stderr still go to the pipes that WSL interop gives 
 ### State directory `%LOCALAPPDATA%\toastback\`
 - `bin\toastback.exe` — the installed copy. All registration points here, never at a download folder or `\\wsl.localhost` path.
 - `install.json` — install record: version, install time, WSL distros that received a shim, PATH change made or not. Used by `uninstall`/`doctor`.
-- `pending\<id>.json` — spec + token. Pruned when older than `expires` (default 3 days, toasts at most 3: the Windows limit) on every run.
+- `pending\<id>.json` — spec + token. Pruned when older than `expires` (default 3 days for toasts, the Windows limit, and 7 for dialogs) on every run.
 - `cache\` — icons/images copied from WSL paths (toast images from `\\wsl.localhost` are unreliable).
 - `log\toastback.jsonl` — events: shown, activated, callback started/finished (exit code, duration, stdout/stderr tail ≤ 8 KB). Rotate at ~5 MB.
 
@@ -95,7 +95,7 @@ protocol activation. stdout/stderr still go to the pipes that WSL interop gives 
   "attribution": "CI",              // small grey line on toasts
   "scenario": "default",            // default | reminder | alarm | urgent  (reminder/alarm stay on screen)
   "sound": "default",               // default | silent | alarm | reminder
-  "expires": "3d",                  // how long it lives in Action Center / pending store (toasts: max 3d)
+  "expires": "3d",                  // how long it lives in Action Center / pending store (toasts: max 3d; dialogs default 7d)
   "on_click": "details",            // details | default | none  (body click). Default: "details" if details set, else "default"
   "buttons": [                      // max 5
     { "id": "deploy", "label": "Deploy", "style": "success",

@@ -56,7 +56,48 @@ impl Cli {
         if !is_command {
             args.insert(i.min(args.len()), "show".into());
         }
+        attach_dash_values(&mut args);
         Cli::try_parse_from(args)
+    }
+}
+
+/// Text for -t, -m and -d often comes from a script's output, which may start with `-` (`-- Build
+/// files have been written`): pass such a value as `--body=<value>`, so clap takes it as the value.
+/// A value that is one of our own flags stays a flag (`-t -m x` is still "-t needs a value").
+fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let mut flags: Vec<String> = vec!["--".into(), "-".into()];
+    for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
+        for a in c.get_arguments() {
+            flags.extend(a.get_short().map(|s| format!("-{s}")));
+            flags.extend(a.get_long().map(|l| format!("--{l}")));
+        }
+    }
+    flags.extend(["-h", "--help", "-V", "--version"].map(String::from));
+    let is_flag = |v: &str| {
+        flags.iter().any(|f| f == v)
+            || v.split_once('=')
+                .is_some_and(|(f, _)| f.starts_with("--") && flags.iter().any(|g| g == f))
+    };
+    let mut i = 0;
+    while i + 1 < args.len() {
+        let long = match args[i].to_str() {
+            Some("-t" | "--title") => "--title",
+            Some("-m" | "--body") => "--body",
+            Some("-d" | "--details") => "--details",
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        match args[i + 1].to_str() {
+            Some(v) if v.starts_with('-') && !is_flag(v) => {
+                args[i] = format!("{long}={v}").into();
+                args.remove(i + 1);
+            }
+            _ => i += 2,
+        }
     }
 }
 
@@ -89,15 +130,14 @@ impl CtxArgs {
 pub struct ShowArgs {
     /// JSON spec file, or - for stdin (default: stdin, unless -t/-m are given)
     pub file: Option<String>,
-    // text often comes from a script's output, which may start with `-` (`-- Build files ...`)
     /// Title (overrides the spec)
-    #[arg(short = 't', long, allow_hyphen_values = true)]
+    #[arg(short = 't', long)]
     pub title: Option<String>,
     /// Body text
-    #[arg(short = 'm', long = "body", allow_hyphen_values = true)]
+    #[arg(short = 'm', long = "body")]
     pub body: Option<String>,
     /// Details, shown in a dialog when the toast body is clicked
-    #[arg(short = 'd', long, allow_hyphen_values = true)]
+    #[arg(short = 'd', long)]
     pub details: Option<String>,
     /// Icon (PNG/JPG; Windows or WSL path)
     #[arg(short = 'i', long)]
@@ -255,7 +295,8 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Remove { ids } => {
             let mut missing = 0;
             for id in &ids {
-                if store.load_pending(id)?.is_some() {
+                // by file, not by content: one written by a newer version can be removed too
+                if store.has_pending(id) {
                     let _ = toast::remove(id);
                     store.remove_pending(id)?;
                     store.log("removed", serde_json::json!({ "id": id }))?;
@@ -395,6 +436,8 @@ mod tests {
         assert_eq!(show(&cli).file.as_deref(), Some("-"));
         assert_eq!(show(&cli).mode, Some(Mode::Dialog));
 
+        // a missing value doesn't swallow the next flag
+        assert!(Cli::parse_with_default(["toastback", "-t", "-m", "x"]).is_err());
         // text from a script may start with a dash
         let cli = parse(&[
             "-t",

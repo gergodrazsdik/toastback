@@ -142,7 +142,7 @@ console window.
   "attribution": "CI",              // small grey line
   "scenario": "default",            // default | reminder | alarm | urgent (reminder/alarm stay on screen; need a button)
   "sound": "default",               // default | silent | alarm | reminder
-  "expires": "3d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m); toasts: at most 3d
+  "expires": "3d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m). Default 3d (toast), 7d (dialog)
   "on_click": "details",            // body click: details | default | none (default: details if set, else default)
   "buttons": [                      // up to 5
     { "id": "deploy", "label": "Deploy", "style": "success",   // style: success | critical (Windows 11)
@@ -159,7 +159,8 @@ console window.
 
 Unknown fields are errors, so typos don't go unnoticed. Each notification handles **one** click: the toast is
 removed, and later clicks (also while its callback still runs) are ignored and logged. Windows keeps a toast in
-the notification center for 3 days at most, so a longer `expires` only matters for dialogs. Ids that Windows
+the notification center for 3 days at most, so a longer `expires` only matters for dialogs. A choice in a dialog
+that opened before `expires` still counts for up to a day after it. Ids that Windows
 reserves as device names (`CON`, `NUL`, `COM1`, …) are refused.
 
 ### Callbacks (`run`)
@@ -176,11 +177,19 @@ Exactly one of:
 | `{"open": "url-or-path"}` | the default app for a URL, file or folder (Windows `%VAR%`s like `%USERPROFILE%` are expanded in paths, not in URLs) |
 
 Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override the context) and `"timeout": "5m"`
-(the callback, and everything it started, is killed after it). Windows-side callbacks run in your profile folder
-unless `cwd` is set. A relative `cwd` is resolved against the directory you ran `toastback` in. `cmd` can't run in
+(the callback, and everything it started, is killed after it; processes detached on purpose with `nohup` or
+`setsid` in WSL survive). Windows-side callbacks run in your profile folder unless `cwd` is set. A relative `cwd` is
+resolved against the directory you ran `toastback` in (from cmd or PowerShell: for Windows-side callbacks only),
+and `~` means your home directory in `wsl` callbacks only. `cmd` can't run in
 a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths), so `toastback` rejects that spec; use `pwsh`.
 A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
-otherwise. The log records each callback's command and the names of its `env` variables, not their values.
+otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
+names of its `env` variables, not their values.
+
+A program a callback leaves running in the background (`start /b server.exe`, `Start-Process -NoNewWindow`,
+`server &`) should send its output elsewhere (`> server.log 2>&1`): toastback reads the callback's output only until
+2 seconds after the callback itself exits, and a program still writing to it afterwards may get "broken pipe"
+errors.
 
 Callbacks get `TOASTBACK_ID`, `TOASTBACK_ACTION` (the button id, or `__body`), `TOASTBACK_TITLE` and
 `TOASTBACK_DATA` (the `data` JSON) as environment variables. For WSL callbacks they (and `env`) are passed

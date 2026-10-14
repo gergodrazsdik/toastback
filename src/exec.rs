@@ -79,6 +79,9 @@ pub fn plan(
         let Some(c) = run.cwd.as_deref() else {
             return Ok(None);
         };
+        if c.starts_with('~') {
+            bail!("cwd {c:?}: `~` only means the home directory for wsl callbacks");
+        }
         let win = context::to_windows_path(c, ctx)?;
         if !context::is_windows_path(&win) {
             bail!("cwd {c:?} is relative, and there's no caller directory to resolve it against");
@@ -101,7 +104,7 @@ pub fn plan(
             let other_distro = run.distro.as_ref().is_some_and(|d| {
                 ctx.distro
                     .as_ref()
-                    .is_none_or(|c| !c.eq_ignore_ascii_case(d))
+                    .is_none_or(|c| !context::same_distro(c, d))
             });
             let mut args = Vec::new();
             if let Some(d) = run.distro.as_ref().or(ctx.distro.as_ref()) {
@@ -130,8 +133,6 @@ pub fn plan(
                 None => names.join(":"),
             };
             env.push(("WSLENV".into(), wslenv));
-            // wsl.exe's own messages ("no such distro", ...) in UTF-8, not UTF-16, for the log
-            env.push(("WSL_UTF8".into(), "1".into()));
             process("wsl.exe", args, env, None)
         }
         RunKind::Cmd(s) => {
@@ -180,8 +181,9 @@ pub fn check(run: &Run, ctx: &Context) -> Result<()> {
     plan(run, ctx, &[], None).map(drop)
 }
 
-/// The `--cd` for wsl.exe, which takes only `~`, absolute Linux paths and Windows paths: a relative
-/// `cwd` is resolved against the caller's directory.
+/// The `--cd` for wsl.exe, which takes absolute Linux and Windows paths and expands a leading `~`,
+/// but resolves a relative path against its own (Windows) directory: so a relative `cwd` is
+/// resolved against the caller's directory here.
 fn wsl_cwd(cwd: Option<&str>, base: Option<&str>) -> Result<String> {
     let absolute =
         |c: &str| c.starts_with('/') || c.starts_with('~') || context::is_windows_path(c);
@@ -232,10 +234,24 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The last `TAIL_BYTES` of a stream, as (lossy) UTF-8.
+/// The last `TAIL_BYTES` of a stream as text (see [`decode_output`]). The cut is at an even
+/// offset, so UTF-16 stays aligned.
 pub fn tail(bytes: &[u8]) -> String {
     let start = bytes.len().saturating_sub(TAIL_BYTES);
-    String::from_utf8_lossy(&bytes[start..]).into_owned()
+    decode_output(&bytes[start + start % 2..])
+}
+
+/// Process output as text. wsl.exe writes its own messages ("There is no distribution with the
+/// supplied name") in UTF-16LE; setting `WSL_UTF8` instead would leak into every Windows program the
+/// callback starts. Mostly `X\0` pairs means UTF-16LE; anything else is (lossy) UTF-8.
+pub fn decode_output(bytes: &[u8]) -> String {
+    let (units, _) = bytes.as_chunks::<2>();
+    let ascii_like = units.iter().filter(|u| u[0] != 0 && u[1] == 0).count();
+    if units.len() >= 2 && ascii_like * 2 > units.len() {
+        String::from_utf16le_lossy(&bytes[..units.len() * 2])
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 #[cfg(windows)]
@@ -252,18 +268,25 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use anyhow::{Context as _, Result, bail};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
     use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject,
     };
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::core::{HSTRING, PCWSTR, w};
+    use windows::core::{HSTRING, Owned, PCWSTR, w};
 
     use super::{Outcome, Plan, TAIL_BYTES, is_url, tail};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_SUSPENDED: u32 = 0x0000_0004;
     /// After the callback exits, how long to wait for programs it started that still hold its
     /// stdout/stderr (`start notepad`, a server in the background).
     const OUTPUT_GRACE: Duration = Duration::from_secs(2);
@@ -332,7 +355,8 @@ mod imp {
                     c.stdin(Stdio::null())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
-                        .creation_flags(CREATE_NO_WINDOW)
+                        // suspended until it's in the job, so nothing it starts can escape it
+                        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
                         .spawn()
                 };
                 let mut child = match (spawn(program), fallback) {
@@ -342,9 +366,13 @@ mod imp {
                     (r, _) => r.with_context(|| format!("start {program}"))?,
                 };
                 // Everything the callback starts joins its job, so a timeout ends all of it, not
-                // just cmd.exe or pwsh.exe. (A program started in the moment before the
-                // assignment escapes the job; Command can't start the child suspended.)
+                // just cmd.exe or pwsh.exe. The child starts suspended, so it can't start anything
+                // before it's in the job.
                 let job = Job::new().ok().filter(|j| j.assign(&child));
+                if resume_threads(child.id()) == 0 {
+                    let _ = child.kill();
+                    bail!("start {program}: couldn't resume the new process");
+                }
                 let out = Drain::start(child.stdout.take().unwrap());
                 let err = Drain::start(child.stderr.take().unwrap());
                 let mut timed_out = false;
@@ -378,31 +406,70 @@ mod imp {
 
     /// A job object for one callback's process tree. Closing it leaves the processes running:
     /// `start notepad` from a callback keeps its window.
-    struct Job(HANDLE);
+    struct Job(Owned<HANDLE>);
 
     impl Job {
         fn new() -> Result<Job> {
-            // SAFETY: no security attributes, no name; the handle is owned by the Job and closed
-            // on drop.
-            Ok(Job(unsafe { CreateJobObjectW(None, PCWSTR::null()) }?))
+            // SAFETY: no security attributes, no name; Owned closes the handle on drop.
+            let job = Job(unsafe { Owned::new(CreateJobObjectW(None, PCWSTR::null())?) });
+            // Breakaway allowed: a dialog a callback opens (`toastback --mode dialog`) leaves the job
+            // (CREATE_BREAKAWAY_FROM_JOB in dialog.rs), so the callback's timeout doesn't close it.
+            // It's an extended-limit flag: the basic structure alone is refused. Without it the job
+            // still does its main work, so a failure here is no reason to go without one.
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            // SAFETY: the pointer and size describe `limits`, which outlives the call.
+            let _ = unsafe {
+                SetInformationJobObject(
+                    *job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            Ok(job)
         }
 
         fn assign(&self, child: &std::process::Child) -> bool {
             // SAFETY: both handles are valid for the call; the child's stays owned by `child`.
-            unsafe { AssignProcessToJobObject(self.0, HANDLE(child.as_raw_handle())) }.is_ok()
+            unsafe { AssignProcessToJobObject(*self.0, HANDLE(child.as_raw_handle())) }.is_ok()
         }
 
         fn terminate(&self) {
             // SAFETY: valid job handle.
-            let _ = unsafe { TerminateJobObject(self.0, 1) };
+            let _ = unsafe { TerminateJobObject(*self.0, 1) };
         }
     }
 
-    impl Drop for Job {
-        fn drop(&mut self) {
-            // SAFETY: the handle came from CreateJobObjectW and is closed once.
-            let _ = unsafe { CloseHandle(self.0) };
+    /// Resume the threads of a process started with CREATE_SUSPENDED (std's Child doesn't keep its
+    /// main thread's handle). Returns how many were resumed.
+    fn resume_threads(pid: u32) -> usize {
+        let mut resumed = 0;
+        // SAFETY: the snapshot and thread handles are owned (closed on drop); `entry` is a local
+        // struct with its size set, as Thread32First/Next require.
+        unsafe {
+            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else {
+                return 0;
+            };
+            let snap = Owned::new(snap);
+            let mut entry = THREADENTRY32 {
+                dwSize: size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            let mut more = Thread32First(*snap, &mut entry).is_ok();
+            while more {
+                if entry.th32OwnerProcessID == pid
+                    && let Ok(t) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
+                {
+                    let t = Owned::new(t);
+                    if ResumeThread(*t) != u32::MAX {
+                        resumed += 1;
+                    }
+                }
+                more = Thread32Next(*snap, &mut entry).is_ok();
+            }
         }
+        resumed
     }
 
     /// Expand `%VAR%` references (ShellExecute doesn't). Unknown variables stay as they are.
@@ -443,7 +510,8 @@ mod imp {
                     let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
                     kept.extend_from_slice(&buf[..n]);
                     if kept.len() > 2 * TAIL_BYTES {
-                        let cut = kept.len() - TAIL_BYTES;
+                        // an even cut keeps UTF-16 output aligned
+                        let cut = (kept.len() - TAIL_BYTES) & !1;
                         kept.drain(..cut);
                     }
                 }
@@ -711,6 +779,70 @@ mod tests {
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
         // what PowerShell's [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('dir')) gives
         assert_eq!(base64_utf16le("dir"), "ZABpAHIA");
+    }
+
+    #[test]
+    fn output_decoding() {
+        let utf16: Vec<u8> = "There is no distribution\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(decode_output(&utf16), "There is no distribution\r\n");
+        assert_eq!(decode_output("grüß dich".as_bytes()), "grüß dich");
+        assert_eq!(decode_output(b""), "");
+        assert_eq!(decode_output(b"a"), "a");
+        // the tail of long UTF-16 output stays readable
+        let long: Vec<u8> = "x"
+            .repeat(TAIL_BYTES + 3)
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert!(tail(&long).chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn home_cwd_is_for_wsl_only() {
+        assert!(
+            plan(
+                &run(r#"{"pwsh": "x", "cwd": "~/proj"}"#),
+                &ctx(),
+                &vars(),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            plan(
+                &run(r#"{"wsl": "x", "cwd": "~/proj"}"#),
+                &ctx(),
+                &vars(),
+                None
+            )
+            .is_ok()
+        );
+    }
+
+    /// The job really holds the callback's process tree: a grandchild that would write a file after
+    /// 3 s dies with the 1 s timeout. (Windows only: runs cmd.exe.)
+    #[cfg(windows)]
+    #[test]
+    fn timeout_kills_grandchildren() {
+        let marker = std::env::temp_dir().join(format!("toastback-job-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!(
+            r#"start /b cmd /c "ping -n 4 127.0.0.1 >nul & echo x > {}" & ping -n 30 127.0.0.1 >nul"#,
+            marker.display()
+        );
+        let r = Run {
+            cmd: Some(cmd),
+            timeout: Some("1s".into()),
+            ..Default::default()
+        };
+        let p = plan(&r, &Context::default(), &[], None).unwrap();
+        let o = execute(&p, r.timeout().unwrap()).unwrap();
+        assert!(o.timed_out);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        assert!(!marker.exists(), "a grandchild outlived the timeout");
     }
 
     #[test]

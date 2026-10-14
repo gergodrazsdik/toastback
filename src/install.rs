@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `install`, `uninstall`, the WSL shim and the user PATH entry.
 
+use anyhow::Result;
+
+use crate::context::same_distro;
+use crate::spec::Context;
+use crate::store::ShimTarget;
+
 const SHIM_TEMPLATE: &str = include_str!("../res/shim.sh.tmpl");
 /// First-line marker: `uninstall` only deletes files that carry it.
 pub const SHIM_MARKER: &str = "# toastback WSL shim";
@@ -41,6 +47,34 @@ pub fn parse_distro_list(bytes: &[u8]) -> Vec<String> {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Is `name` in a list of distros (names are case-insensitive)?
+pub fn has_distro(list: &[String], name: &str) -> bool {
+    list.iter().any(|d| same_distro(d, name))
+}
+
+/// Where `install --wsl <wsl>` writes the shim. The calling distro always gets the calling user
+/// (with `all` too); other distros get their default user. `list` runs only when needed.
+pub fn shim_targets(
+    wsl: Option<&str>,
+    ctx: &Context,
+    list: impl FnOnce() -> Result<Vec<String>>,
+) -> Result<Vec<ShimTarget>> {
+    let target = |distro: String| ShimTarget {
+        user: ctx.user.clone().filter(|_| {
+            ctx.distro
+                .as_deref()
+                .is_some_and(|c| same_distro(c, &distro))
+        }),
+        distro,
+    };
+    Ok(match (wsl, &ctx.distro) {
+        (Some("none"), _) => Vec::new(),
+        (Some("all"), _) | (None, None) => list()?.into_iter().map(target).collect(),
+        (Some(d), _) => vec![target(d.into())],
+        (None, Some(d)) => vec![target(d.clone())],
+    })
 }
 
 fn same_dir(a: &str, b: &str) -> bool {
@@ -106,12 +140,13 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, SHIM_MARKER, parse_distro_list, path_with, path_without,
-        protocol_command, render_shim,
+        CLI_EXE, GUI_EXE, SHIM_MARKER, has_distro, parse_distro_list, path_with, path_without,
+        protocol_command, render_shim, same_distro,
     };
     use crate::registry::{self, Kind};
     use crate::spec::Context;
     use crate::store::{ShimTarget, Store, timestamp};
+
     use crate::toast::{self, AUMID};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -157,7 +192,7 @@ mod imp {
         if cli.exists() {
             copy_exe(&cli, &store.bin_dir().join(CLI_EXE))?;
         }
-        println!(
+        outln!(
             "installed {} (written fresh, so no \"downloaded from the internet\" marker carries over)",
             store.bin_dir().display()
         );
@@ -175,7 +210,7 @@ mod imp {
             &protocol_command(&exe.to_string_lossy()),
             Kind::Plain,
         )?;
-        println!("registered the toastback:// handler and the notification app id");
+        outln!("registered the toastback:// handler and the notification app id");
 
         let mut record = store.install_record()?.unwrap_or_default();
         // forget shims in distros that were removed since (`wsl --unregister`)
@@ -184,12 +219,12 @@ mod imp {
         }
         if opts.add_to_path {
             if add_to_path(&store.bin_dir().to_string_lossy())? {
-                println!(
+                outln!(
                     "added {} to your user PATH (new terminals see it)",
                     store.bin_dir().display()
                 );
             } else {
-                println!("{} is already on your user PATH", store.bin_dir().display());
+                outln!("{} is already on your user PATH", store.bin_dir().display());
             }
             record.path_added = true;
         }
@@ -199,9 +234,9 @@ mod imp {
             match write_shim(t, &shim) {
                 Ok(()) => {
                     // the same distro under another spelling replaces the old entry
-                    record.shims.retain(|r| {
-                        !(r.distro.eq_ignore_ascii_case(&t.distro) && r.user == t.user)
-                    });
+                    record
+                        .shims
+                        .retain(|r| !(same_distro(&r.distro, &t.distro) && r.user == t.user));
                     record.shims.push(t.clone());
                 }
                 Err(e) => eprintln!("warning: shim for {}: {e:#}", t.distro),
@@ -279,37 +314,7 @@ mod imp {
     }
 
     fn shim_targets(wsl: Option<&str>, ctx: &Context) -> Result<Vec<ShimTarget>> {
-        let all = || -> Result<Vec<ShimTarget>> {
-            Ok(list_distros()?
-                .into_iter()
-                .map(|distro| ShimTarget { distro, user: None })
-                .collect())
-        };
-        Ok(match wsl {
-            Some("none") => Vec::new(),
-            Some("all") => all()?,
-            Some(d) => vec![ShimTarget {
-                distro: d.into(),
-                // the calling distro gets the calling user; others their default user
-                user: ctx.user.clone().filter(|_| {
-                    ctx.distro
-                        .as_deref()
-                        .is_some_and(|c| c.eq_ignore_ascii_case(d))
-                }),
-            }],
-            None => match &ctx.distro {
-                Some(d) => vec![ShimTarget {
-                    distro: d.clone(),
-                    user: ctx.user.clone(),
-                }],
-                None => all()?,
-            },
-        })
-    }
-
-    /// WSL distro names are case-insensitive (`wsl -d ubuntu` runs Ubuntu).
-    fn has_distro(list: &[String], name: &str) -> bool {
-        list.iter().any(|d| d.eq_ignore_ascii_case(name))
+        super::shim_targets(wsl, ctx, list_distros)
     }
 
     pub fn list_distros() -> Result<Vec<String>> {
@@ -375,7 +380,7 @@ mod imp {
             .user
             .as_deref()
             .map_or(String::new(), |u| format!(" ({u})"));
-        println!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
+        outln!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
         // the user's login shell decides PATH; zsh users set it in .zshenv, bash users in .profile
         let path = wsl_sh(
             t,
@@ -385,7 +390,7 @@ mod imp {
         .unwrap_or_default();
         let bin = format!("{home}/.local/bin");
         if !path.split(':').any(|p| p == bin || p == "~/.local/bin") {
-            println!(
+            outln!(
                 "  note: {bin} is not on PATH in {}; add it to your shell profile",
                 t.distro
             );
@@ -401,29 +406,29 @@ mod imp {
         let existing = list_distros().ok();
         for t in record.iter().flat_map(|r| &r.shims) {
             if existing.as_ref().is_some_and(|e| !has_distro(e, &t.distro)) {
-                println!(
+                outln!(
                     "skipped the shim in {}: the distro no longer exists",
                     t.distro
                 );
                 continue;
             }
             match wsl_sh(t, &script, None) {
-                Ok(out) if out.contains("removed") => println!("removed the shim in {}", t.distro),
-                Ok(_) => println!("no toastback shim in {}", t.distro),
+                Ok(out) if out.contains("removed") => outln!("removed the shim in {}", t.distro),
+                Ok(_) => outln!("no toastback shim in {}", t.distro),
                 Err(e) => eprintln!("warning: shim in {}: {e:#}", t.distro),
             }
         }
         if record.as_ref().is_some_and(|r| r.path_added)
             && remove_from_path(&store.bin_dir().to_string_lossy())?
         {
-            println!("removed {} from your user PATH", store.bin_dir().display());
+            outln!("removed {} from your user PATH", store.bin_dir().display());
         }
         if let Err(e) = toast::remove_all() {
             eprintln!("warning: clearing toasts: {e:#}");
         }
         registry::delete_tree(&aumid_key())?;
         registry::delete_tree(PROTOCOL_KEY)?;
-        println!("removed the registry keys");
+        outln!("removed the registry keys");
         store.remove_install_record()?;
 
         let target = if purge {
@@ -485,15 +490,15 @@ mod imp {
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .context("schedule deleting the install dir")?;
-            println!("{what} will be deleted in a moment");
+            outln!("{what} will be deleted in a moment");
         } else {
             match fs::remove_dir_all(target) {
-                Ok(()) => println!("deleted {what}"),
+                Ok(()) => outln!("deleted {what}"),
                 // files in use stay; the rest is gone (remove_dir_all stops at the first failure,
                 // so finish with a best-effort pass)
                 Err(_) if !busy.is_empty() => {
                     remove_unused(target);
-                    println!("deleted {what}");
+                    outln!("deleted {what}");
                 }
                 Err(e) => {
                     return Err(e).with_context(|| format!("delete {}", target.display()));
@@ -623,6 +628,38 @@ mod tests {
             ["FedoraLinux-44", "Ubuntu"]
         );
         assert!(parse_distro_list(b"").is_empty());
+    }
+
+    #[test]
+    fn shim_targets_keep_the_calling_user() {
+        let ctx = Context {
+            distro: Some("Ubuntu".into()),
+            user: Some("g".into()),
+            cwd: None,
+        };
+        let list = || Ok(vec!["ubuntu".to_string(), "Debian".to_string()]);
+        let t = |d: &str, u: Option<&str>| ShimTarget {
+            distro: d.into(),
+            user: u.map(Into::into),
+        };
+        assert_eq!(
+            shim_targets(Some("all"), &ctx, list).unwrap(),
+            [t("ubuntu", Some("g")), t("Debian", None)]
+        );
+        assert_eq!(
+            shim_targets(None, &ctx, || panic!("no listing needed")).unwrap(),
+            [t("Ubuntu", Some("g"))]
+        );
+        assert_eq!(
+            shim_targets(Some("Debian"), &ctx, list).unwrap(),
+            [t("Debian", None)]
+        );
+        assert!(shim_targets(Some("none"), &ctx, list).unwrap().is_empty());
+        assert_eq!(
+            shim_targets(None, &Context::default(), list).unwrap(),
+            [t("ubuntu", None), t("Debian", None)]
+        );
+        assert!(has_distro(&list().unwrap(), "UBUNTU"));
     }
 
     #[test]

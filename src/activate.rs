@@ -146,7 +146,7 @@ mod imp {
     use crate::exec;
     use crate::show;
     use crate::spec::{BODY_ACTION, OnClick, Run};
-    use crate::store::{Claim, Pending, Store, token_matches};
+    use crate::store::{Claim, Pending, Store, token_matches, unix_now};
     use crate::toast;
 
     /// Handle one toast activation. Nobody sees this process's stderr, so every outcome is logged.
@@ -211,8 +211,8 @@ mod imp {
     /// Show the dialog for a notification; returns the chosen button id.
     fn ask(store: &Store, pending: &Pending) -> Result<Option<String>> {
         let id = pending.spec.id.as_deref().unwrap_or_default();
-        // while it's open, pruning leaves the notification alone, so a late choice still counts
-        if let Err(e) = store.set_dialog_open(id, &pending.token, true) {
+        // a dialog that opens in time keeps its notification a while: a late choice still counts
+        if let Err(e) = store.set_dialog_open(id, &pending.token, unix_now()) {
             let _ = store.log("warning", json!({ "id": id, "error": format!("{e:#}") }));
         }
         let _ = store.log("dialog_shown", json!({ "id": id }));
@@ -229,9 +229,10 @@ mod imp {
         let id = pending.spec.id.clone().unwrap_or_default();
         // A dialog can stay open for long, and another click may be running already: only the
         // first claim for this token runs anything. Claiming marks it done before the callback.
-        let reason = match store.claim(&id, &pending.token)? {
+        let reason = match store.claim(&id, &pending.token, unix_now())? {
             Claim::Claimed => None,
             Claim::Gone => Some("removed or expired"),
+            Claim::Expired => Some("expired"),
             Claim::Replaced => Some("shown again since"),
             Claim::Done => Some("already handled"),
         };

@@ -8,13 +8,14 @@
 // Most logic is platform-neutral and unit-tested on the Linux host, where only the tests use it.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-/// `print!` and `println!` that ignore a closed stdout: a reader that went away (`toastback log |
-/// head`) is no reason to panic, which with `panic = "abort"` would also skip restoring the console.
+/// `print!` and `println!` that don't panic: a reader that went away (`toastback log | head`) is
+/// fine, and with `panic = "abort"` a panic would also skip restoring the console. Other write
+/// errors (a full disk behind `> file`) make the exit code 1, see [`main`].
 #[allow(unused_macros)] // only Windows code prints
 macro_rules! out {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
-        let _ = write!(std::io::stdout().lock(), $($arg)*);
+        $crate::note_stdout(write!(std::io::stdout().lock(), $($arg)*));
     }};
 }
 
@@ -22,8 +23,21 @@ macro_rules! out {
 macro_rules! outln {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
-        let _ = writeln!(std::io::stdout().lock(), $($arg)*);
+        $crate::note_stdout(writeln!(std::io::stdout().lock(), $($arg)*));
     }};
+}
+
+static STDOUT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Remember a failed stdout write, unless the reader just went away.
+#[allow(dead_code)] // only Windows code prints
+fn note_stdout(r: std::io::Result<()>) {
+    if let Err(e) = r
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+        && !STDOUT_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        eprintln!("toastback: writing the output failed: {e}");
+    }
 }
 
 mod activate;
@@ -71,6 +85,7 @@ pub fn main() -> ExitCode {
         }
     };
     match cli::run(cli) {
+        Ok(_) if STDOUT_FAILED.load(std::sync::atomic::Ordering::Relaxed) => ExitCode::from(1),
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("toastback: {e:#}");

@@ -68,8 +68,35 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
     spec.apply(&flags);
     spec.context.fill_from(ctx);
     spec.validate()?;
+    if spec.context.cwd.is_none()
+        && let Ok(dir) = std::env::current_dir()
+    {
+        resolve_windows_cwds(&mut spec, &dir.to_string_lossy());
+    }
     check_runs(&spec)?;
     Ok(spec)
+}
+
+/// Started from cmd or PowerShell (no shim, so no caller directory), a relative `cwd` of a
+/// Windows-side callback means the directory `toastback` runs in. The click handler runs
+/// elsewhere, so make it absolute now. (`wsl` callbacks need a Linux directory: still an error.)
+fn resolve_windows_cwds(spec: &mut Spec, dir: &str) {
+    let runs = spec.buttons.iter_mut().filter_map(|b| b.run.as_mut());
+    for run in runs.chain(spec.default.as_mut()) {
+        let windows_side = run.kind().is_ok_and(|k| {
+            !matches!(
+                k,
+                crate::spec::RunKind::WslShell(_) | crate::spec::RunKind::WslArgv(_)
+            )
+        });
+        if let Some(c) = run.cwd.as_mut()
+            && windows_side
+            && !context::is_windows_path(c)
+            && !c.starts_with(['/', '~'])
+        {
+            *c = format!(r"{}\{}", dir.trim_end_matches('\\'), c.replace('/', "\\"));
+        }
+    }
 }
 
 /// What would otherwise only fail at click time: a relative cwd without a caller directory, ...
@@ -103,16 +130,10 @@ fn read_stdin() -> Result<String> {
 /// Spec text as written by Windows tools too: UTF-8 with or without a BOM, or UTF-16 with one
 /// (Windows PowerShell's `Set-Content -Encoding UTF8`, `Out-File` and `>`).
 pub fn decode_text(bytes: &[u8]) -> Result<String> {
-    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
-        let (chunks, odd) = rest.as_chunks::<2>();
-        anyhow::ensure!(odd.is_empty(), "odd number of bytes in UTF-16 text");
-        String::from_utf16(&chunks.iter().map(|&c| unit(c)).collect::<Vec<_>>())
-            .context("invalid UTF-16")
-    };
     match bytes {
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).context("invalid UTF-8"),
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        [0xFF, 0xFE, rest @ ..] => String::from_utf16le(rest).context("invalid UTF-16"),
+        [0xFE, 0xFF, rest @ ..] => String::from_utf16be(rest).context("invalid UTF-16"),
         _ => String::from_utf8(bytes.to_vec()).context("invalid UTF-8 (save the file as UTF-8)"),
     }
 }
@@ -242,6 +263,29 @@ mod tests {
             body: Some("b".into()),
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn relative_windows_cwds_resolve_against_the_current_dir() {
+        let mut spec = Spec::parse(
+            r#"{"title": "t", "default": {"pwsh": "x", "cwd": "sub/dir"},
+                "buttons": [{"id": "w", "label": "W", "run": {"wsl": "x", "cwd": "sub"}},
+                            {"id": "a", "label": "A", "run": {"cmd": "x", "cwd": "D:\\abs"}}]}"#,
+        )
+        .unwrap();
+        resolve_windows_cwds(&mut spec, r"C:\work\");
+        assert_eq!(
+            spec.default.unwrap().cwd.as_deref(),
+            Some(r"C:\work\sub\dir")
+        );
+        assert_eq!(
+            spec.buttons[0].run.as_ref().unwrap().cwd.as_deref(),
+            Some("sub")
+        );
+        assert_eq!(
+            spec.buttons[1].run.as_ref().unwrap().cwd.as_deref(),
+            Some(r"D:\abs")
+        );
     }
 
     #[test]

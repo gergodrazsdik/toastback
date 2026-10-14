@@ -66,12 +66,23 @@ jobs:
           shellcheck scripts/*.sh examples/*.sh
           shellcheck -s bash res/shim.sh.tmpl
 
+      - name: Cache actionlint
+        id: actionlint
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/actionlint
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}
+
       - name: yamllint, actionlint
+        env:
+          BUILD: ${{ steps.actionlint.outputs.cache-hit != 'true' }}
         run: |
           pipx install yamllint
           yamllint -s .github .yamllint
-          GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
-          "$RUNNER_TEMP/bin/actionlint"
+          if [ "$BUILD" = true ]; then
+            GOBIN=~/.cache/actionlint go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
+          fi
+          ~/.cache/actionlint/actionlint
 
       - name: Host tests
         run: cargo test --target x86_64-unknown-linux-gnu

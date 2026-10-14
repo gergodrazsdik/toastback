@@ -60,25 +60,28 @@ main() {
   [ "$(printf '%s\n' "$sums" | grep -c .)" -eq 2 ] || die "SHA256SUMS doesn't list both exes"
   (cd "$tmp" && printf '%s\n' "$sums" | sha256sum -c --quiet -) || die "checksum mismatch: not installing"
 
-  # the shim goes to this distro, unless the arguments say otherwise (`--wsl all`)
-  local wsl=(--wsl "$WSL_DISTRO_NAME") arg
+  # This distro and user, unless the arguments say otherwise (`--wsl all`, `--user`): passing an
+  # option twice is an error. (The ${a[@]+...} form: bash < 4.4 calls an empty array unbound.)
+  local own=() arg wsl=1 distro=1 user=1
   for arg in "$@"; do
     case "$arg" in
-      --wsl | --wsl=*) wsl=() ;;
+      --wsl | --wsl=*) wsl= ;;
+      --distro | --distro=*) distro= ;;
+      --user | --user=*) user= ;;
     esac
   done
+  [ -z "$wsl" ] || own+=(--wsl "$WSL_DISTRO_NAME")
+  [ -z "$distro" ] || own+=(--distro "$WSL_DISTRO_NAME")
+  [ -z "$user" ] || own+=(--user "$(id -un)")
 
   # install copies the exes to %LOCALAPPDATA%\toastback\bin; the temp copies are deleted on exit
   chmod +x "$tmp/toastback.exe" "$tmp/toastback-cli.exe" # drvfs mounted with `metadata` needs it
-  local rc=0
-  "$tmp/toastback.exe" install "${wsl[@]}" --distro "$WSL_DISTRO_NAME" --user "$(id -un)" "$@" \
-    </dev/null || rc=$?
-  if [ "$rc" -eq 126 ]; then
-    die "Windows refused to start toastback.exe. An \"Invalid argument\" error usually means Windows App
-  Control blocked it: Smart App Control (Windows Security > App & browser control) blocks unsigned apps it
-  doesn't know yet. See https://github.com/$repo#limitations"
-  elif [ "$rc" -ne 0 ]; then
-    die "toastback.exe install failed (exit code $rc, see its message above)"
+  if ! "$tmp/toastback.exe" install ${own[@]+"${own[@]}"} "$@" </dev/null; then
+    # WSL reports a start that Windows refused as "<exe>: Invalid argument" with exit code 1, the
+    # same code as a failed install, so the hint can only be conditional
+    die "toastback.exe install failed (see the message above). If it says \"Invalid argument\", Windows
+  refused to start it: Smart App Control (Windows Security > App & browser control) blocks unsigned apps
+  it doesn't know yet. See https://github.com/$repo#limitations"
   fi
 
   case ":$PATH:" in

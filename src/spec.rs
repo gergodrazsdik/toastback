@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 pub const MAX_BUTTONS: usize = 5;
 /// Action id for a click on the toast body.
 pub const BODY_ACTION: &str = "__body";
-pub const DEFAULT_EXPIRES: &str = "3d";
+/// Default `expires`: toasts can't outlive 3 days anyway, dialogs keep a week.
+pub const DEFAULT_EXPIRES_TOAST: &str = "3d";
+pub const DEFAULT_EXPIRES_DIALOG: &str = "7d";
 /// Windows keeps a toast in the notification center for at most 3 days: after that nothing can be
 /// clicked, so a toast's pending record doesn't need to outlive it. Dialogs have no such limit.
 pub const MAX_TOAST_LIFETIME: Duration = Duration::from_secs(3 * 86400);
@@ -105,9 +107,19 @@ pub struct Context {
 
 impl Context {
     /// Fill the fields the spec left empty. A context written in the spec wins over the shim's.
+    /// The caller's user and directory belong to the caller's distro: a spec that names another
+    /// distro doesn't get them (it runs as that distro's default user, in its home directory).
     pub fn fill_from(&mut self, other: &Context) {
+        let other_distro = match (&self.distro, &other.distro) {
+            (Some(mine), Some(theirs)) => !crate::context::same_distro(mine, theirs),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
         if self.distro.is_none() {
             self.distro.clone_from(&other.distro);
+        }
+        if other_distro {
+            return;
         }
         if self.user.is_none() {
             self.user.clone_from(&other.user);
@@ -251,7 +263,11 @@ impl Spec {
     }
 
     pub fn expires(&self) -> Result<Duration> {
-        parse_duration(self.expires.as_deref().unwrap_or(DEFAULT_EXPIRES))
+        let default = match self.mode {
+            Mode::Toast => DEFAULT_EXPIRES_TOAST,
+            Mode::Dialog => DEFAULT_EXPIRES_DIALOG,
+        };
+        parse_duration(self.expires.as_deref().unwrap_or(default))
     }
 
     /// How long the notification stays clickable: `expires`, capped at 3 days for toasts.
@@ -362,7 +378,7 @@ pub fn is_token(s: &str, max: usize) -> bool {
 }
 
 /// A name Windows maps to a device whatever the extension (`NUL.json` is NUL).
-fn is_device_name(id: &str) -> bool {
+pub fn is_device_name(id: &str) -> bool {
     let stem = id.split('.').next().unwrap_or(id).to_ascii_uppercase();
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4
@@ -557,12 +573,39 @@ mod tests {
             ..Default::default()
         };
         c.fill_from(&Context {
-            distro: Some("Shim".into()),
+            distro: Some("spec".into()),
             user: Some("u".into()),
             cwd: None,
         });
         assert_eq!(c.distro.as_deref(), Some("Spec"));
         assert_eq!(c.user.as_deref(), Some("u"));
+
+        // another distro than the caller's: not the caller's user and directory
+        let mut other = Context {
+            distro: Some("Debian".into()),
+            ..Default::default()
+        };
+        other.fill_from(&Context {
+            distro: Some("Ubuntu".into()),
+            user: Some("g".into()),
+            cwd: Some("/home/g/proj".into()),
+        });
+        assert_eq!(other.distro.as_deref(), Some("Debian"));
+        assert_eq!((other.user, other.cwd), (None, None));
+    }
+
+    #[test]
+    fn default_expiry_depends_on_the_mode() {
+        assert_eq!(
+            spec(r#"{"title": "x"}"#).expires().unwrap(),
+            MAX_TOAST_LIFETIME
+        );
+        assert_eq!(
+            spec(r#"{"title": "x", "mode": "dialog"}"#)
+                .expires()
+                .unwrap(),
+            Duration::from_secs(7 * 86400)
+        );
     }
 
     #[test]

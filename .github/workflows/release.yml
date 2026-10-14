@@ -77,15 +77,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft 2>/dev/null); then
+          # only "release not found" means there's none yet; any other error stops here, so a flaky
+          # API can't lead to a second draft
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft 2>err.txt); then
             if [ "$draft" != true ]; then
               echo "::error::$GITHUB_REF_NAME is already published"
               exit 1
             fi
             gh release upload "$GITHUB_REF_NAME" --clobber dist/*
             gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
-          else
+          elif grep -q 'release not found' err.txt; then
             gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
               --notes-file notes.md dist/*
+          else
+            cat err.txt
+            exit 1
           fi
           gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -110,8 +110,14 @@ release version:
     git pull --ff-only
     grep -qxF "version = \"$v\"" Cargo.toml || { echo "main isn't at $v: merge the 'just bump' PR first"; exit 1; }
     grep -qF "## [$v] - " CHANGELOG.md || { echo "CHANGELOG.md has no [$v] section"; exit 1; }
-    # the commit that set the version, not main's head: PRs merged after it wait for the next release
-    commit=$(git log -1 --format=%H -S "version = \"$v\"" -- Cargo.toml)
+    # The commit that set the version, not main's head: PRs merged after it wait for the next release.
+    # Walk back through the commits that changed Cargo.toml while its package version is still $v.
+    pkg_version() { git show "$1:Cargo.toml" | sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p'; }
+    commit=
+    while read -r c; do
+        [ "$(pkg_version "$c")" = "$v" ] || break
+        commit=$c
+    done < <(git log --format=%H -- Cargo.toml)
     [ -n "$commit" ] || { echo "no commit sets version $v in Cargo.toml"; exit 1; }
     if [ "$commit" != "$(git rev-parse HEAD)" ]; then
         echo "tagging $(git log -1 --format='%h %s' "$commit");"
@@ -122,7 +128,7 @@ release version:
     # the run for this tag; it can take a while to be queued
     run=
     for _ in $(seq 24); do
-        run=$(gh run list --workflow release.yml --branch "v$v" --event push --limit 1 --json databaseId -q '.[0].databaseId')
+        run=$(gh run list --workflow release.yml --branch "v$v" --event push --limit 1 --json databaseId -q '.[0].databaseId') || run=
         [ -n "$run" ] && break
         sleep 5
     done

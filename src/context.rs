@@ -5,6 +5,11 @@ use anyhow::{Result, bail};
 
 use crate::spec::Context;
 
+/// WSL distro names are case-insensitive (`wsl -d ubuntu` runs Ubuntu).
+pub fn same_distro(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// True for `C:\…`, `C:/…` and UNC paths (`\\server\…`).
 pub fn is_windows_path(p: &str) -> bool {
     let b = p.as_bytes();
