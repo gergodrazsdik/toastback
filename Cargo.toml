@@ -1,0 +1,11 @@
+[package]
+name = "toastback"
+version = "0.1.0"
+edition = "2024"
+description = "async Windows toasts with callbacks, for WSL and scripts"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/gergodrazsdik/toastback"
+readme = "README.md"
+publish = false
+
+[dependencies]
