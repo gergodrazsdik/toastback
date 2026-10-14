@@ -54,30 +54,44 @@ jobs:
           cp res/icon.png pkg/res/
           (cd pkg && zip -qr ../dist/toastback-x86_64.zip .)
           cp scripts/install.sh dist/
-          (cd dist && sha256sum toastback.exe toastback-cli.exe toastback-x86_64.zip install.sh > SHA256SUMS)
+          # every asset in dist/ is listed (the glob expands before SHA256SUMS exists)
+          (cd dist && sha256sum -- * > SHA256SUMS)
           cat dist/SHA256SUMS
 
       - uses: actions/attest-build-provenance@v4
         with:
-          subject-path: |
-            dist/toastback.exe
-            dist/toastback-cli.exe
-            dist/toastback-x86_64.zip
-            dist/install.sh
+          subject-path: dist/*
 
       - name: Release notes from CHANGELOG.md
         run: |
           version=${GITHUB_REF_NAME#v}
-          awk -v v="$version" 'index($0, "## [" v "]") == 1 { f = 1; next } /^## \[/ { f = 0 } f' CHANGELOG.md \
-            > notes.md
+          # the section ends at the next heading, or at the version link definitions after the last
+          # one (not at a reference link inside a section)
+          awk -v v="$version" 'index($0, "## [" v "]") == 1 { f = 1; next }
+            /^## \[|^\[(unreleased|[0-9]+\.[0-9]+\.[0-9]+)\]: / { f = 0 } f' CHANGELOG.md > notes.md
           grep -q . notes.md || { echo "::error::empty [$version] section in CHANGELOG.md"; exit 1; }
           cat notes.md
 
-      # releases are immutable once published: create a draft, attach everything, then publish
+      # Releases are immutable once published: create a draft, attach everything, then publish. A re-run
+      # after a failure finds the draft and replaces its assets.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md dist/*
+          # only "release not found" means there's none yet; any other error stops here, so a flaky
+          # API can't lead to a second draft
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft 2>err.txt); then
+            if [ "$draft" != true ]; then
+              echo "::error::$GITHUB_REF_NAME is already published"
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" --clobber dist/*
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          elif grep -q 'release not found' err.txt; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file notes.md dist/*
+          else
+            cat err.txt
+            exit 1
+          fi
           gh release edit "$GITHUB_REF_NAME" --draft=false

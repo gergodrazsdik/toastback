@@ -56,7 +56,62 @@ impl Cli {
         if !is_command {
             args.insert(i.min(args.len()), "show".into());
         }
+        attach_dash_values(&mut args);
         Cli::try_parse_from(args)
+    }
+
+    /// Is this the `show` command (also when it was the default)?
+    pub fn is_show(&self) -> bool {
+        matches!(self.command, Command::Show(_))
+    }
+}
+
+/// Text for -t, -m and -d often comes from a script's output, which may start with `-` (`-- Build
+/// files have been written`): pass such a value as `--body=<value>`, so clap takes it as the value.
+/// A value that is one of our own flags stays a flag (`-t -m x` is still "-t needs a value").
+fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
+    use clap::CommandFactory;
+    const TEXT_FLAGS: [&str; 6] = ["-t", "--title", "-m", "--body", "-d", "--details"];
+    let dash_value = |pair: &[std::ffi::OsString]| {
+        pair[0].to_str().is_some_and(|f| TEXT_FLAGS.contains(&f))
+            && pair[1].to_str().is_some_and(|v| v.starts_with('-'))
+    };
+    // the usual case (a click, a dialog, plain text): no need for the list of our flags
+    if !args.windows(2).any(dash_value) {
+        return;
+    }
+    let cmd = Cli::command();
+    let mut flags: Vec<String> = vec!["--".into(), "-".into()];
+    for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
+        for a in c.get_arguments() {
+            flags.extend(a.get_short().map(|s| format!("-{s}")));
+            flags.extend(a.get_long().map(|l| format!("--{l}")));
+        }
+    }
+    flags.extend(["-h", "--help", "-V", "--version"].map(String::from));
+    let is_flag = |v: &str| {
+        flags.iter().any(|f| f == v)
+            || v.split_once('=')
+                .is_some_and(|(f, _)| f.starts_with("--") && flags.iter().any(|g| g == f))
+    };
+    let mut i = 0;
+    while i + 1 < args.len() {
+        let long = match args[i].to_str() {
+            Some("-t" | "--title") => "--title",
+            Some("-m" | "--body") => "--body",
+            Some("-d" | "--details") => "--details",
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        match args[i + 1].to_str() {
+            Some(v) if v.starts_with('-') && !is_flag(v) => {
+                args[i] = format!("{long}={v}").into();
+                args.remove(i + 1);
+            }
+            _ => i += 2,
+        }
     }
 }
 
@@ -215,8 +270,8 @@ pub fn run(cli: Cli) -> Result<u8> {
                 ..Default::default()
             };
             match show::show_spec(&store, spec) {
-                Ok(_) => println!("done: a test notification is on its way"),
-                Err((_, e)) => eprintln!("warning: test notification failed: {e:#}"),
+                Ok(_) => outln!("done: a test notification is on its way"),
+                Err((_, e)) => errln!("warning: test notification failed: {e:#}"),
             }
             Ok(0)
         }
@@ -226,17 +281,17 @@ pub fn run(cli: Cli) -> Result<u8> {
         }
         Command::Shim { win_exe } => {
             let exe = win_exe.unwrap_or_else(|| store.installed_exe().to_string_lossy().into());
-            print!("{}", install::render_shim(env!("CARGO_PKG_VERSION"), &exe));
+            out!("{}", install::render_shim(env!("CARGO_PKG_VERSION"), &exe));
             Ok(0)
         }
         Command::Validate { files } => {
             let mut bad = 0;
             for file in &files {
                 match show::validate_file(file, &ctx) {
-                    Ok(()) => println!("ok    {file}"),
+                    Ok(()) => outln!("ok    {file}"),
                     Err(e) => {
                         bad += 1;
-                        println!("FAIL  {file}: {e:#}");
+                        outln!("FAIL  {file}: {e:#}");
                     }
                 }
             }
@@ -245,23 +300,24 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Doctor { json } => {
             let checks = doctor::run(&store, &ctx, env!("CARGO_PKG_VERSION"));
             if json {
-                println!("{}", serde_json::to_string_pretty(&checks)?);
+                outln!("{}", serde_json::to_string_pretty(&checks)?);
             } else {
-                print!("{}", doctor::render(&checks));
+                out!("{}", doctor::render(&checks));
             }
             Ok(doctor::exit_code(&checks))
         }
         Command::Remove { ids } => {
             let mut missing = 0;
             for id in &ids {
-                if store.load_pending(id)?.is_some() {
+                // by file, not by content: one written by a newer version can be removed too
+                if store.has_pending(id) {
                     let _ = toast::remove(id);
                     store.remove_pending(id)?;
                     store.log("removed", serde_json::json!({ "id": id }))?;
-                    println!("removed {id}");
+                    outln!("removed {id}");
                 } else {
                     missing += 1;
-                    eprintln!("toastback: no notification {id}");
+                    errln!("toastback: no notification {id}");
                 }
             }
             Ok(u8::from(missing > 0))
@@ -269,11 +325,10 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Clear => {
             let _ = toast::remove_all();
             let ids = store.pending_ids()?;
-            for id in &ids {
-                store.remove_pending(id)?;
-            }
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            store.remove_pendings(&ids)?;
             store.log("cleared", serde_json::json!({ "ids": ids }))?;
-            println!("removed {} notification(s)", ids.len());
+            outln!("removed {} notification(s)", ids.len());
             Ok(0)
         }
         Command::Log { n, id } => {
@@ -283,7 +338,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                 .filter(|e| id.is_none() || e["id"].as_str() == id.as_deref())
                 .collect();
             for e in &events[events.len().saturating_sub(n)..] {
-                print!("{}", format_event(e));
+                out!("{}", format_event(e));
             }
             Ok(0)
         }
@@ -393,6 +448,23 @@ mod tests {
         let cli = parse(&["show", "-", "--mode", "dialog"]);
         assert_eq!(show(&cli).file.as_deref(), Some("-"));
         assert_eq!(show(&cli).mode, Some(Mode::Dialog));
+
+        // a missing value doesn't swallow the next flag
+        assert!(Cli::parse_with_default(["toastback", "-t", "-m", "x"]).is_err());
+        // text from a script may start with a dash
+        let cli = parse(&[
+            "-t",
+            "cmake",
+            "-m",
+            "-- Build files have been written",
+            "-d",
+            "-1",
+        ]);
+        assert_eq!(
+            show(&cli).body.as_deref(),
+            Some("-- Build files have been written")
+        );
+        assert_eq!(show(&cli).details.as_deref(), Some("-1"));
 
         // no arguments at all: show, reading stdin
         assert_eq!(show(&parse(&[])).file, None);

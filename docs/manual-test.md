@@ -68,6 +68,33 @@ covered by the smoke job, so here they only need to be checked once.
     shows the toast, and `toastback log` / the pending context names the right distro. The same with the variable
     set but empty: `-p Environment=WSL_DISTRO_NAME=`.
 
+## Edge cases
+
+30. **Double click:** `examples/deploy.json` has details, so its body opens the details dialog. Show it and read its
+    token from `%LOCALAPPDATA%\toastback\pending\<id>.json`. Click the body to open the dialog. The clicked toast
+    leaves the notification center, so click its **Deploy** from a terminal while the dialog is open:
+    `toastback.exe activate "toastback://act?id=<id>&a=deploy&t=<token>"`. Then pick **Deploy** in the dialog.
+    `toastback log` shows one `callback_started` and a `rejected … already handled`. (Without a desktop: start two
+    such `activate` commands at once.)
+31. **Timeout kills the tree:** `{"cmd": "ping -n 600 127.0.0.1", "timeout": "5s"}` gives the "timed out" toast after
+    about 5 s, and Task Manager shows no `PING.EXE` left. `{"cmd": "start \"\" notepad"}` finishes at once, and
+    Notepad stays open. `{"wsl": "(sleep 8; touch /tmp/tb) & sleep 30", "timeout": "3s"}`: no `/tmp/tb` appears.
+    A callback `{"pwsh": "toastback-cli --mode dialog -t keep; Start-Sleep 60", "timeout": "5s"}`: the dialog stays
+    open after the timeout.
+32. **cmd in a WSL directory:** `toastback` with a `cmd` button and `"cwd": "/home/<you>"` exits 2 with "cmd can't run
+    in \\wsl.localhost\…", and so does an `exe` button that runs a `.cmd` file. A relative `"cwd": "sub"` on a `wsl`
+    button runs in `$PWD/sub`.
+33. **Text starting with a dash:** `toastback -t cmake -m "-- Build files have been written"` shows that body.
+34. **Windows encodings:** in PowerShell 5.1, `@{title='Jörg'} | ConvertTo-Json | Set-Content -Encoding UTF8 a.json`
+    and `@{title='x'} | ConvertTo-Json > b.json` (UTF-16): `toastback-cli validate a.json b.json` says `ok` twice.
+35. **Re-show while a callback runs:** a spec with `"id": "standup"` and a button
+    `{"wsl": "sleep 5 && toastback ~/standup.json"}`: click it; the new toast stays after the first callback ends.
+36. **Closed pipe:** `toastback log -n 1000 | head -1` prints one line and no error; the terminal still returns
+    to column 0 after a newline.
+37. **Secrets stay out of the log:** a button with `"env": {"SECRET": "s3cr3t"}`, clicked: `grep -c s3cr3t
+    "$(wslpath "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/toastback/log/toastback.jsonl"` is 0.
+    (On a machine that ran 1.0.0, delete that `log` folder first: 1.0.0 logged the values.)
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

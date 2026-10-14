@@ -25,20 +25,26 @@ what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [PLAN.md](PLAN
 
 ## Install
 
-**From WSL:** download the installer and the checksums, check them, read the script, then run it.
+**From WSL:** in an empty directory, download the installer and the checksums, check the installer and read it.
+`less` only opens once the checksum is right (`install.sh: OK`):
 
 ```bash
+cd "$(mktemp -d)"
 base=https://github.com/gergodrazsdik/toastback/releases/latest/download
 curl -fsSLO "$base/install.sh" && curl -fsSLO "$base/SHA256SUMS"
-sha256sum -c --ignore-missing SHA256SUMS      # install.sh: OK
-less install.sh                               # what it does, before you run it
-bash install.sh                               # or: bash install.sh --add-to-path
+sha256sum -c --ignore-missing SHA256SUMS && less install.sh
 ```
 
-`install.sh` downloads `toastback.exe` and `toastback-cli.exe` into your Windows temp folder, checks them against
-the same `SHA256SUMS`, and runs `toastback.exe install` for your distro and user. Extra arguments go to
-`install`. For a specific version, use `releases/download/v1.0.0` as `base` and run
-`TOASTBACK_VERSION=v1.0.0 bash install.sh`. Release builds also carry a
+Then, in the same directory, run it (add `--add-to-path` for `toastback-cli` in cmd and PowerShell):
+
+```bash
+bash install.sh
+```
+
+`install.sh` downloads `toastback.exe`, `toastback-cli.exe` and the release's `SHA256SUMS` into your Windows temp
+folder, checks the exes against it, and runs `toastback.exe install` for your distro and user. Extra arguments go
+to `install` (`--wsl all` for every distro). For a specific version, use `releases/download/v1.0.0` as `base` and
+run `TOASTBACK_VERSION=v1.0.0 bash install.sh`. Release builds also carry a
 [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
 `gh attestation verify toastback.exe -R gergodrazsdik/toastback` (likewise `toastback-cli.exe`, the zip and, in
 releases after 1.0.0, `install.sh`) shows that GitHub Actions built the file from this repository.
@@ -126,7 +132,7 @@ console window.
 
 ```jsonc
 {
-  "id": "deploy-1234",              // optional: generated if absent ([A-Za-z0-9._-], max 64)
+  "id": "deploy-1234",              // optional: generated if absent ([A-Za-z0-9._-], max 64, no leading -)
   "mode": "toast",                  // toast | dialog
   "title": "Deploy to production?", // required
   "body": "Build 1234 passed all checks.",
@@ -136,7 +142,7 @@ console window.
   "attribution": "CI",              // small grey line
   "scenario": "default",            // default | reminder | alarm | urgent (reminder/alarm stay on screen; need a button)
   "sound": "default",               // default | silent | alarm | reminder
-  "expires": "7d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m)
+  "expires": "3d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m). Default 3d (toast), 7d (dialog)
   "on_click": "details",            // body click: details | default | none (default: details if set, else default)
   "buttons": [                      // up to 5
     { "id": "deploy", "label": "Deploy", "style": "success",   // style: success | critical (Windows 11)
@@ -151,8 +157,11 @@ console window.
 }
 ```
 
-Unknown fields are errors, so typos don't go unnoticed. Each notification handles **one** click; after it, the
-toast is removed and later clicks are ignored (and logged).
+Unknown fields are errors, so typos don't go unnoticed. Each notification handles **one** click: the toast is
+removed, and later clicks (also while its callback still runs) are ignored and logged. Windows keeps a toast in
+the notification center for 3 days at most, so a longer `expires` only matters for dialogs. A choice in a dialog
+that opened before `expires` still counts for up to a day after it. Ids that Windows
+reserves as device names (`CON`, `NUL`, `COM1`, …) are refused.
 
 ### Callbacks (`run`)
 
@@ -165,10 +174,23 @@ Exactly one of:
 | `{"cmd": "string"}` | `cmd.exe /d /s /c "<string>"` |
 | `{"pwsh": "string"}` | PowerShell 7 (`pwsh`), else Windows PowerShell, via `-EncodedCommand` (no quoting issues) |
 | `{"exe": ["C:\\path\\x.exe", "arg"]}` | the program directly |
-| `{"open": "url-or-path"}` | the default app for a URL, file or folder (`%VAR%`s are expanded) |
+| `{"open": "url-or-path"}` | the default app for a URL, file or folder (Windows `%VAR%`s like `%USERPROFILE%` are expanded in paths, not in URLs) |
 
 Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override the context) and `"timeout": "5m"`
-(the callback is killed after it). Windows-side callbacks run in your profile folder unless `cwd` is set.
+(the callback, and everything it started, is killed after it; processes detached on purpose with `nohup` or
+`setsid` in WSL survive). Windows-side callbacks run in your profile folder unless `cwd` is set. A relative `cwd` is
+resolved against the directory you ran `toastback` in (from cmd or PowerShell: for Windows-side callbacks only),
+and `~` means your home directory in `wsl` callbacks only. `cmd` (and an `exe` that is a `.bat` or `.cmd` script)
+can't run in a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths), so `toastback` rejects that spec;
+use `pwsh`.
+A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
+otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
+names of its `env` variables, not their values.
+
+A program a callback leaves running in the background (`start /b server.exe`, `Start-Process -NoNewWindow`,
+`server &`) should send its output elsewhere (`> server.log 2>&1`): toastback reads the callback's output only until
+2 seconds after the callback itself exits, and a program still writing to it afterwards may get "broken pipe"
+errors.
 
 Callbacks get `TOASTBACK_ID`, `TOASTBACK_ACTION` (the button id, or `__body`), `TOASTBACK_TITLE` and
 `TOASTBACK_DATA` (the `data` JSON) as environment variables. For WSL callbacks they (and `env`) are passed

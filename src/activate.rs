@@ -146,7 +146,7 @@ mod imp {
     use crate::exec;
     use crate::show;
     use crate::spec::{BODY_ACTION, OnClick, Run};
-    use crate::store::{Pending, Store, token_matches};
+    use crate::store::{Claim, Pending, Store, token_matches, unix_now};
     use crate::toast;
 
     /// Handle one toast activation. Nobody sees this process's stderr, so every outcome is logged.
@@ -178,18 +178,19 @@ mod imp {
         if act.action != BODY_ACTION && pending.spec.button(&act.action).is_none() {
             return reject("unknown button");
         }
-        store.log("activated", json!({ "id": act.id, "action": act.action }))?;
+        // a log write that fails must not cost the click
+        let _ = store.log("activated", json!({ "id": act.id, "action": act.action }));
 
-        let action = if act.action == BODY_ACTION {
+        let (action, from_dialog) = if act.action == BODY_ACTION {
             match pending.spec.body_click() {
-                OnClick::Default => Some(BODY_ACTION.to_string()),
-                OnClick::Details => ask(store, &pending)?,
-                OnClick::None => None,
+                OnClick::Default => (Some(BODY_ACTION.to_string()), false),
+                OnClick::Details => (ask(store, &pending)?, true),
+                OnClick::None => (None, false),
             }
         } else {
-            Some(act.action)
+            (Some(act.action), false)
         };
-        finish(store, pending, action.as_deref())
+        finish(store, &pending, action.as_deref(), from_dialog)
     }
 
     /// `__dialog <id>`: the detached process behind `mode: dialog`.
@@ -204,62 +205,73 @@ mod imp {
             return store.log("rejected", json!({ "id": id, "reason": "already handled" }));
         }
         let action = ask(store, &pending)?;
-        finish(store, pending, action.as_deref())
+        finish(store, &pending, action.as_deref(), true)
     }
 
     /// Show the dialog for a notification; returns the chosen button id.
     fn ask(store: &Store, pending: &Pending) -> Result<Option<String>> {
         let id = pending.spec.id.as_deref().unwrap_or_default();
-        store.log("dialog_shown", json!({ "id": id }))?;
+        // a dialog that opens in time keeps its notification a while: a late choice still counts
+        if let Err(e) = store.set_dialog_open(id, &pending.token, unix_now()) {
+            let _ = store.log("warning", json!({ "id": id, "error": format!("{e:#}") }));
+        }
+        let _ = store.log("dialog_shown", json!({ "id": id }));
         let choice = td::show(&td::model(&pending.spec))?;
-        store.log(
+        let _ = store.log(
             "dialog_closed",
             json!({ "id": id, "action": choice.as_deref().unwrap_or("(closed)") }),
-        )?;
+        );
         Ok(choice)
     }
 
-    /// Run the callback for `action` (if any), mark the notification handled, clear its toast.
-    fn finish(store: &Store, mut pending: Pending, action: Option<&str>) -> Result<()> {
+    /// Claim the click, clear the toast, then run the callback for `action` (if any).
+    /// `from_dialog`: the choice was made in a dialog (which may count past `expires`).
+    fn finish(
+        store: &Store,
+        pending: &Pending,
+        action: Option<&str>,
+        from_dialog: bool,
+    ) -> Result<()> {
         let id = pending.spec.id.clone().unwrap_or_default();
-        // a dialog can stay open for long: was the notification removed (or handled) meanwhile?
-        if !store.load_pending(&id)?.is_some_and(|p| !p.done) {
+        // A dialog can stay open for long, and another click may be running already: only the
+        // first claim for this token runs anything. Claiming marks it done before the callback.
+        let reason = match store.claim(&id, &pending.token, unix_now(), from_dialog)? {
+            Claim::Claimed => None,
+            Claim::Gone => Some("removed or expired"),
+            Claim::Expired => Some("expired"),
+            Claim::Replaced => Some("shown again since"),
+            Claim::Done => Some("already handled"),
+        };
+        if let Some(reason) = reason {
             return store.log(
                 "rejected",
-                json!({ "id": id, "action": action, "reason": "removed or already handled" }),
+                json!({ "id": id, "action": action, "reason": reason }),
+            );
+        }
+        if let Err(e) = toast::remove(&id) {
+            let _ = store.log(
+                "warning",
+                json!({ "id": id, "error": format!("remove toast: {e:#}") }),
             );
         }
         if let Some(action) = action
             && let Some(run) = pending.spec.run_for(action)
         {
-            run_callback(store, &pending, &id, action, run)?;
-        }
-        pending.done = true;
-        store.save_pending(&pending)?;
-        if let Err(e) = toast::remove(&id) {
-            store.log(
-                "warning",
-                json!({ "id": id, "error": format!("remove toast: {e:#}") }),
-            )?;
+            run_callback(store, pending, &id, action, run);
         }
         Ok(())
     }
 
-    fn run_callback(
-        store: &Store,
-        pending: &Pending,
-        id: &str,
-        action: &str,
-        run: &Run,
-    ) -> Result<()> {
+    fn run_callback(store: &Store, pending: &Pending, id: &str, action: &str, run: &Run) {
         let spec = &pending.spec;
         let vars = callback_vars(spec, id, action);
         let wslenv = std::env::var("WSLENV").ok();
         let result = exec::plan(run, &spec.context, &vars, wslenv.as_deref()).and_then(|plan| {
-            store.log(
+            // env values may be secrets: the log gets their names only
+            let _ = store.log(
                 "callback_started",
-                json!({ "id": id, "action": action, "plan": format!("{plan:?}") }),
-            )?;
+                json!({ "id": id, "action": action, "plan": plan.describe() }),
+            );
             exec::execute(&plan, run.timeout()?)
         });
         let ended = match result {
@@ -272,7 +284,7 @@ mod imp {
                     stderr: o.stderr,
                     error: None,
                 };
-                store.log(
+                let _ = store.log(
                     "callback_finished",
                     json!({
                         "id": id, "action": action,
@@ -280,15 +292,15 @@ mod imp {
                         "duration_ms": ended.duration_ms,
                         "stdout": ended.stdout, "stderr": ended.stderr,
                     }),
-                )?;
+                );
                 ended
             }
             Err(e) => {
                 let error = format!("{e:#}");
-                store.log(
+                let _ = store.log(
                     "callback_failed",
                     json!({ "id": id, "action": action, "error": error }),
-                )?;
+                );
                 Ended {
                     error: Some(error),
                     ..Default::default()
@@ -298,12 +310,11 @@ mod imp {
         if let Some(note) = feedback(spec, action, &ended)
             && let Err((_, e)) = show::show_spec(store, note)
         {
-            store.log(
+            let _ = store.log(
                 "warning",
                 json!({ "id": id, "error": format!("feedback toast: {e:#}") }),
-            )?;
+            );
         }
-        Ok(())
     }
 }
 

@@ -4,15 +4,22 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::spec::Spec;
+use crate::spec::{Spec, is_safe_id};
 
 const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+/// How long past `expires` a choice in a dialog that opened in time still counts.
+const DIALOG_GRACE_SECS: u64 = 86400;
+/// Locks are held for a few file operations; waiting longer than this means something is wrong.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+/// The kinds of cached images: `cache\<id>-icon.<ext>` and `cache\<id>-image.<ext>`.
+pub const ICON: &str = "icon";
+pub const IMAGE: &str = "image";
 
 pub struct Store {
     root: PathBuf,
@@ -32,6 +39,33 @@ pub struct Pending {
     pub icon_path: Option<String>,
     #[serde(default)]
     pub image_path: Option<String>,
+    /// A dialog for it opened before it expired and is still open: a choice in that dialog counts
+    /// up to a day past expiry, and `prune` keeps the file that long.
+    #[serde(default)]
+    pub dialog_open: bool,
+}
+
+/// The fields `prune` needs, read leniently: a file written by a newer version still parses.
+#[derive(Deserialize)]
+struct PendingHead {
+    expires_at: u64,
+    #[serde(default)]
+    dialog_open: bool,
+}
+
+/// What [`Store::claim`] found.
+#[derive(Debug)]
+pub enum Claim {
+    /// This caller handles the click; the record is now marked done.
+    Claimed,
+    /// Removed, pruned or never shown.
+    Gone,
+    /// Past `expires` (and no dialog that opened in time).
+    Expired,
+    /// Shown again under the same id since (a new token).
+    Replaced,
+    /// Another click got there first.
+    Done,
 }
 
 /// `install.json`: what `install` changed, so `uninstall` and `doctor` can find it.
@@ -97,13 +131,22 @@ impl Store {
         self.root.join("install.json")
     }
 
+    /// Write a pending notification (replacing one with the same id).
     pub fn save_pending(&self, p: &Pending) -> Result<()> {
+        let _lock = self.lock_pending()?;
+        self.write_pending(p)
+    }
+
+    fn write_pending(&self, p: &Pending) -> Result<()> {
         let id = p.spec.id.as_deref().context("pending spec without id")?;
         write_atomic(&self.pending_file(id), &serde_json::to_vec_pretty(p)?)
     }
 
     /// `None` when there is no such pending notification (expired, pruned or never shown).
     pub fn load_pending(&self, id: &str) -> Result<Option<Pending>> {
+        if !is_safe_id(id) {
+            return Ok(None);
+        }
         match fs::read(self.pending_file(id)) {
             Ok(bytes) => Ok(Some(
                 serde_json::from_slice(&bytes).context("corrupt pending file")?,
@@ -113,9 +156,73 @@ impl Store {
         }
     }
 
+    /// Is there a pending file for `id`, readable or not (one from a newer version may not be)?
+    pub fn has_pending(&self, id: &str) -> bool {
+        is_safe_id(id) && self.pending_file(id).exists()
+    }
+
     pub fn remove_pending(&self, id: &str) -> Result<()> {
-        remove_if_exists(&self.pending_file(id))?;
-        self.remove_cached(id)
+        self.remove_pendings(&[id])
+    }
+
+    /// Delete these pending notifications and their cached images: one lock, one pass over the
+    /// cache. A file that can't be deleted doesn't stop the others; the first error is returned.
+    pub fn remove_pendings(&self, ids: &[&str]) -> Result<()> {
+        let ids: Vec<&str> = ids.iter().copied().filter(|id| is_safe_id(id)).collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _lock = self.lock_pending()?;
+        let mut removed = Vec::new();
+        let mut failed = None;
+        for id in ids {
+            match remove_if_exists(&self.pending_file(id)) {
+                Ok(()) => removed.push(id),
+                Err(e) => {
+                    failed.get_or_insert(e);
+                }
+            }
+        }
+        self.remove_cached(&removed)?;
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Take the click for the notification shown with `token`: mark it done, atomically, so two
+    /// clicks (or a click and a dialog) never both run its callback. `from_dialog`: the choice
+    /// was made in a dialog, which may count past `expires` (see [`Store::set_dialog_open`]); a
+    /// late toast click or a replayed URI doesn't.
+    pub fn claim(&self, id: &str, token: &str, now: u64, from_dialog: bool) -> Result<Claim> {
+        let _lock = self.lock_pending()?;
+        let Some(mut p) = self.load_pending(id)? else {
+            return Ok(Claim::Gone);
+        };
+        if !token_matches(&p.token, token) {
+            return Ok(Claim::Replaced);
+        }
+        if p.done {
+            return Ok(Claim::Done);
+        }
+        if now > deadline(p.expires_at, p.dialog_open && from_dialog) {
+            return Ok(Claim::Expired);
+        }
+        p.done = true;
+        p.dialog_open = false;
+        self.write_pending(&p)?;
+        Ok(Claim::Claimed)
+    }
+
+    /// Record that a dialog for the notification shown with `token` opened before it expired.
+    pub fn set_dialog_open(&self, id: &str, token: &str, now: u64) -> Result<()> {
+        let _lock = self.lock_pending()?;
+        if let Some(mut p) = self.load_pending(id)?
+            && token_matches(&p.token, token)
+            && !p.done
+            && now <= p.expires_at
+        {
+            p.dialog_open = true;
+            self.write_pending(&p)?;
+        }
+        Ok(())
     }
 
     /// Ids of all pending notifications.
@@ -140,44 +247,66 @@ impl Store {
     }
 
     /// Delete pending files (and their cached images) whose notification expired. Returns the ids.
+    /// One with an open dialog is kept a day longer; an unreadable one is deleted. While another
+    /// process holds the pending lock, nothing is pruned: the next run does it.
     pub fn prune(&self, now: u64) -> Result<Vec<String>> {
-        let mut pruned = Vec::new();
-        let entries = match fs::read_dir(self.pending_dir()) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(pruned),
-            Err(e) => return Err(e).context("read pending dir"),
+        // scan without the lock (every toastback run prunes), then lock to re-check and delete
+        let candidates: Vec<String> = self
+            .pending_ids()?
+            .into_iter()
+            .filter(|id| self.expired(id, now))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        // pruning can wait for the next run: it never holds up a show or a click
+        let Some(_lock) = lock_file(&self.pending_lock(), Duration::ZERO)? else {
+            return Ok(Vec::new());
         };
-        for entry in entries {
-            let path = entry?.path();
-            let Some(id) = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_suffix(".json"))
-            else {
-                continue;
-            };
-            let expired = match fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
-            {
-                Some(p) => p.expires_at <= now,
-                None => true, // unreadable: nothing can use it
-            };
-            if expired {
-                let id = id.to_string();
-                self.remove_pending(&id)?;
+        let mut pruned = Vec::new();
+        for id in candidates {
+            // a file that can't be deleted now (in use) is tried again next time
+            if self.expired(&id, now) && remove_if_exists(&self.pending_file(&id)).is_ok() {
                 pruned.push(id);
             }
         }
+        let ids: Vec<&str> = pruned.iter().map(String::as_str).collect();
+        self.remove_cached(&ids)?;
         Ok(pruned)
+    }
+
+    fn expired(&self, id: &str, now: u64) -> bool {
+        let head = fs::read(self.pending_file(id));
+        match head {
+            Ok(b) => match serde_json::from_slice::<PendingHead>(&b) {
+                Ok(h) => deadline(h.expires_at, h.dialog_open) < now,
+                Err(_) => true, // unreadable: nothing can use it
+            },
+            // gone meanwhile (or not readable now): nothing to do
+            Err(_) => false,
+        }
+    }
+
+    /// Every change to a pending file happens under this lock, so a read-modify-write never
+    /// overwrites a newer file.
+    fn lock_pending(&self) -> Result<LockGuard> {
+        let path = self.pending_lock();
+        lock_file(&path, LOCK_WAIT)?
+            .with_context(|| format!("{} is locked by another toastback process", path.display()))
+    }
+
+    fn pending_lock(&self) -> PathBuf {
+        self.pending_dir().join(".lock")
     }
 
     /// Copy an image into the cache as `<id>-<kind>.<ext>`, returning the copy's path.
     pub fn cache_image(&self, id: &str, kind: &str, src: &str) -> Result<PathBuf> {
         let bytes = fs::read(src).with_context(|| format!("{kind}: cannot read {src}"))?;
+        // `bell.` has an empty extension, and Windows would drop the dot from `<id>-icon.`
         let ext = Path::new(src)
             .extension()
             .and_then(|e| e.to_str())
+            .filter(|e| !e.is_empty())
             .map(str::to_ascii_lowercase)
             .unwrap_or_else(|| "png".into());
         fs::create_dir_all(self.cache_dir())?;
@@ -186,17 +315,20 @@ impl Store {
         Ok(dest)
     }
 
-    fn remove_cached(&self, id: &str) -> Result<()> {
+    /// Delete the cached images of these notifications, in one pass over the cache dir.
+    fn remove_cached(&self, ids: &[&str]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         let Ok(entries) = fs::read_dir(self.cache_dir()) else {
             return Ok(());
         };
-        let prefix = format!("{id}-");
         for entry in entries {
             let path = entry?.path();
             if path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&prefix))
+                .is_some_and(|n| ids.iter().any(|id| is_cached_for(n, id)))
             {
                 remove_if_exists(&path)?;
             }
@@ -208,18 +340,29 @@ impl Store {
     pub fn log(&self, event: &str, fields: Value) -> Result<()> {
         let path = self.log_file();
         fs::create_dir_all(path.parent().unwrap())?;
-        if fs::metadata(&path).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES) {
-            fs::rename(&path, path.with_extension("1.jsonl"))?;
+        let too_big = |p: &Path| fs::metadata(p).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES);
+        if too_big(&path) {
+            // Only one process rotates: without the lock, a second one could rename the fresh
+            // log over the rotated one. A failed rotation never costs the event, and one that
+            // another process is doing right now needs no waiting for.
+            if let Ok(Some(_lock)) = lock_file(&path.with_extension("lock"), Duration::ZERO)
+                && too_big(&path)
+            {
+                let _ = fs::rename(&path, path.with_extension("1.jsonl"));
+            }
         }
         let mut line = json!({ "ts": timestamp(SystemTime::now()), "event": event });
         if let (Value::Object(line), Value::Object(fields)) = (&mut line, fields) {
             line.extend(fields);
         }
+        // one write per event, so lines from concurrent processes don't interleave
+        let mut text = line.to_string();
+        text.push('\n');
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
-        writeln!(f, "{line}")?;
+        f.write_all(text.as_bytes())?;
         Ok(())
     }
 
@@ -253,6 +396,66 @@ impl Store {
     pub fn remove_install_record(&self) -> Result<()> {
         remove_if_exists(&self.install_file())
     }
+}
+
+/// An exclusive OS lock on a file, released when dropped, or by the OS when its holder dies (a
+/// killed toastback can't leave it locked). The file itself stays.
+struct LockGuard {
+    _file: fs::File,
+}
+
+/// The lock on `path`, waiting up to `wait` for another process to release it: `None` if it
+/// didn't.
+fn lock_file(path: &Path, wait: Duration) -> Result<Option<LockGuard>> {
+    fs::create_dir_all(path.parent().unwrap())?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(LockGuard { _file: file })),
+            Err(fs::TryLockError::WouldBlock) if start.elapsed() < wait => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("lock {}", path.display()));
+            }
+        }
+    }
+}
+
+/// The last second a click still counts: `expires_at`, or a day later for a choice in a dialog
+/// that opened before it.
+fn deadline(expires_at: u64, dialog_grace: bool) -> u64 {
+    if dialog_grace {
+        expires_at.saturating_add(DIALOG_GRACE_SECS)
+    } else {
+        expires_at
+    }
+}
+
+/// Is `name` a cached image of notification `id`: exactly `<id>-icon.<ext>` or `<id>-image.<ext>`?
+/// (Ids may contain `-` and `.`, so a plain prefix would also match `<id>-2-icon.png`.) The id
+/// matches in any case, as Windows file names do: `Deploy` and `deploy` share one pending file.
+fn is_cached_for(name: &str, id: &str) -> bool {
+    let Some(rest) = name
+        .get(..id.len())
+        .filter(|head| head.eq_ignore_ascii_case(id))
+        .map(|_| &name[id.len()..])
+    else {
+        return false;
+    };
+    [ICON, IMAGE].iter().any(|kind| {
+        rest.strip_prefix('-')
+            .and_then(|r| r.strip_prefix(kind))
+            .and_then(|r| r.strip_prefix('.'))
+            .is_some_and(|ext| !ext.is_empty() && !ext.contains('.'))
+    })
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -349,7 +552,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn temp_store(name: &str) -> Store {
         let dir =
@@ -371,6 +573,7 @@ mod tests {
             done: false,
             icon_path: None,
             image_path: None,
+            dialog_open: false,
         }
     }
 
@@ -391,6 +594,206 @@ mod tests {
     }
 
     #[test]
+    fn cache_files_match_their_id_only() {
+        let s = temp_store("cache");
+        fs::create_dir_all(s.cache_dir()).unwrap();
+        for f in [
+            "build-icon.png",
+            "build-image.jpg",
+            "build-2-icon.png",
+            "build.x-icon.png",
+        ] {
+            fs::write(s.cache_dir().join(f), b"x").unwrap();
+        }
+        s.save_pending(&pending("build", 100)).unwrap();
+        s.remove_pending("build").unwrap();
+        assert!(!s.cache_dir().join("build-icon.png").exists());
+        assert!(!s.cache_dir().join("build-image.jpg").exists());
+        assert!(s.cache_dir().join("build-2-icon.png").exists());
+        assert!(s.cache_dir().join("build.x-icon.png").exists());
+        assert!(is_cached_for("a-icon.png", "a"));
+        assert!(!is_cached_for("a-icon.x-icon.png", "a"));
+        assert!(!is_cached_for("a-icon.", "a"));
+        // Windows file names ignore case: `Deploy` and `deploy` are one pending file
+        assert!(is_cached_for("Deploy-icon.png", "deploy"));
+        assert!(!is_cached_for("Deploy-iconx.png", "deploy"));
+        assert!(!is_cached_for("d", "deploy"));
+        // a source without an extension (or with an empty one) is cached as PNG
+        let src = s.root().join("bell.");
+        fs::write(&src, b"x").unwrap();
+        let cached = s.cache_image("n1", ICON, &src.to_string_lossy()).unwrap();
+        assert!(cached.ends_with("n1-icon.png"), "{}", cached.display());
+        s.remove_pendings(&["n1", "build.x"]).unwrap();
+        assert!(!cached.exists());
+        assert!(!s.cache_dir().join("build.x-icon.png").exists());
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn ids_from_before_the_leading_dash_rule_still_work() {
+        // 1.0.0 accepted ids like `-x`: their notifications stay clickable and removable
+        let s = temp_store("legacy");
+        let p = pending("-x", 100);
+        s.save_pending(&p).unwrap();
+        assert!(s.has_pending("-x"));
+        assert!(s.load_pending("-x").unwrap().is_some());
+        s.remove_pending("-x").unwrap();
+        assert!(s.pending_ids().unwrap().is_empty());
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn claim_is_once_per_token() {
+        let s = temp_store("claim");
+        let p = pending("x", 100);
+        s.save_pending(&p).unwrap();
+        let claim = |t: &str| s.claim("x", t, 50, false).unwrap();
+        assert!(matches!(claim("wrong"), Claim::Replaced));
+        assert!(matches!(claim(&p.token), Claim::Claimed));
+        assert!(s.load_pending("x").unwrap().unwrap().done);
+        assert!(matches!(claim(&p.token), Claim::Done));
+        // shown again under the same id: the old token is no use, the new one works
+        let again = pending("x", 100);
+        s.save_pending(&again).unwrap();
+        assert!(matches!(claim(&p.token), Claim::Replaced));
+        assert!(matches!(claim(&again.token), Claim::Claimed));
+        s.remove_pending("x").unwrap();
+        assert!(matches!(claim(&again.token), Claim::Gone));
+        // ids that can't name a pending file are never found
+        for bad in ["NUL", "com1.json", "a/b", "a b", ""] {
+            assert!(
+                matches!(s.claim(bad, "t", 50, false).unwrap(), Claim::Gone),
+                "{bad}"
+            );
+            assert!(!s.has_pending(bad));
+        }
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn concurrent_claims_have_one_winner() {
+        let s = std::sync::Arc::new(temp_store("race"));
+        for round in 0..20 {
+            let p = pending("x", 100);
+            s.save_pending(&p).unwrap();
+            let winners: usize = (0..8)
+                .map(|_| {
+                    let (s, t) = (s.clone(), p.token.clone());
+                    std::thread::spawn(move || {
+                        matches!(s.claim("x", &t, 50, false).unwrap(), Claim::Claimed)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum();
+            assert_eq!(winners, 1, "round {round}");
+        }
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn late_choices_count_only_for_dialogs_opened_in_time() {
+        let s = temp_store("late");
+        let toast = pending("toast", 100);
+        s.save_pending(&toast).unwrap();
+        assert!(matches!(
+            s.claim("toast", &toast.token, 101, false).unwrap(),
+            Claim::Expired
+        ));
+        // the last second still counts
+        let edge = pending("edge", 100);
+        s.save_pending(&edge).unwrap();
+        assert!(matches!(
+            s.claim("edge", &edge.token, 100, false).unwrap(),
+            Claim::Claimed
+        ));
+
+        let dlg = pending("dlg", 100);
+        s.save_pending(&dlg).unwrap();
+        s.set_dialog_open("dlg", &dlg.token, 90).unwrap();
+        assert!(matches!(
+            s.claim("dlg", &dlg.token, 101 + DIALOG_GRACE_SECS, true)
+                .unwrap(),
+            Claim::Expired
+        ));
+        // only the dialog's own choice gets the grace, not a late toast click or a replayed URI
+        assert!(matches!(
+            s.claim("dlg", &dlg.token, 5000, false).unwrap(),
+            Claim::Expired
+        ));
+        assert!(matches!(
+            s.claim("dlg", &dlg.token, 5000, true).unwrap(),
+            Claim::Claimed
+        ));
+
+        // a dialog that opens after expiry doesn't extend anything
+        let late = pending("late", 100);
+        s.save_pending(&late).unwrap();
+        s.set_dialog_open("late", &late.token, 150).unwrap();
+        assert!(!s.load_pending("late").unwrap().unwrap().dialog_open);
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn prune_keeps_open_dialogs_and_newer_files() {
+        let s = temp_store("prune");
+        let p = pending("dlg", 100);
+        s.save_pending(&p).unwrap();
+        s.set_dialog_open("dlg", &p.token, 50).unwrap();
+        assert!(s.prune(200).unwrap().is_empty());
+        // kept through its last second, like claim counts it
+        assert!(s.prune(100 + DIALOG_GRACE_SECS).unwrap().is_empty());
+        assert_eq!(s.prune(101 + DIALOG_GRACE_SECS).unwrap(), ["dlg"]);
+        // a field from a newer version doesn't make the file unreadable for pruning
+        fs::write(
+            s.pending_dir().join("future.json"),
+            br#"{"expires_at": 500, "new_field": 1, "spec": {"title": "t", "later": true}}"#,
+        )
+        .unwrap();
+        fs::write(s.pending_dir().join("broken.json"), b"{").unwrap();
+        assert_eq!(s.prune(200).unwrap(), ["broken"]);
+        assert_eq!(s.pending_ids().unwrap(), ["future"]);
+        // ... and `remove` still finds it
+        assert!(s.has_pending("future"));
+        s.remove_pending("future").unwrap();
+        assert!(s.pending_ids().unwrap().is_empty());
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn a_held_lock_blocks_and_a_released_one_does_not() {
+        let s = temp_store("lock");
+        let held = s.lock_pending().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = s.pending_lock();
+        // a try without waiting gives up at once, and prune leaves its work for the next run
+        assert!(lock_file(&path, Duration::ZERO).unwrap().is_none());
+        fs::write(
+            s.pending_dir().join("old.json"),
+            serde_json::to_vec(&pending("old", 100)).unwrap(),
+        )
+        .unwrap();
+        assert!(s.prune(200).unwrap().is_empty());
+        let waiter = std::thread::spawn(move || {
+            let _l = lock_file(&path, LOCK_WAIT).unwrap().unwrap();
+            tx.send(()).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "got the lock while held"
+        );
+        drop(held);
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        waiter.join().unwrap();
+        assert_eq!(s.prune(200).unwrap(), ["old"]);
+        // the lock file stays behind; that doesn't lock anything
+        assert!(s.pending_dir().join(".lock").exists());
+        s.save_pending(&pending("x", 100)).unwrap();
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
     fn log_appends_and_reads() {
         let s = temp_store("log");
         s.log("shown", json!({"id": "a"})).unwrap();
@@ -401,6 +804,17 @@ mod tests {
         assert_eq!(events[1]["event"], "activated");
         assert_eq!(events[1]["action"], "b");
         assert!(events[0]["ts"].as_str().unwrap().ends_with('Z'));
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn failed_rotation_still_logs() {
+        // like losing the rotation race: the rename fails, the event is written anyway
+        let s = temp_store("rotate");
+        fs::create_dir_all(s.log_file().with_extension("1.jsonl")).unwrap();
+        fs::write(s.log_file(), vec![b'\n'; LOG_ROTATE_BYTES as usize + 1]).unwrap();
+        s.log("shown", json!({"id": "a"})).unwrap();
+        assert_eq!(s.read_log().unwrap().len(), 1);
         fs::remove_dir_all(s.root()).unwrap();
     }
 

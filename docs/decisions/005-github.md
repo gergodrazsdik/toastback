@@ -17,7 +17,8 @@ Date: 2026-10-14. Applied with `gh api` when preparing 1.0.0 (v0.1.0 was a test 
 
 Public repositories get unlimited standard GitHub-hosted runner minutes, even on a free account. The CI limits are
 about abuse and noise, not cost: PR runs cancel when superseded (`concurrency`), every job has `timeout-minutes`,
-and Dependabot opens at most one grouped PR per ecosystem and week.
+and Dependabot groups its version updates into one PR per ecosystem and week (at most 3 open; security updates
+come as they're found).
 
 ## Release flow
 
@@ -26,7 +27,8 @@ and Dependabot opens at most one grouped PR per ecosystem and week.
 1. `just bump X.Y.Z`: branch `release-vX.Y.Z`, `scripts/bump.sh` (sets `Cargo.toml`/`Cargo.lock`, turns
    `[Unreleased]` into `[X.Y.Z] - date` with its compare link, refuses when `[Unreleased]` is empty), commit, push, PR.
 2. After the PR is merged: `just release X.Y.Z` checks that main is at that version and has the changelog
-   section, then creates and pushes the signed tag `vX.Y.Z`.
+   section, then creates the signed tag `vX.Y.Z` on the commit that set the version (PRs merged after it wait
+   for the next release), pushes it and watches that tag's release run.
 
 `release.yml` checks the tag against `Cargo.toml` and `CHANGELOG.md`, runs CI, uses the changelog section as the
 release notes, and creates the release as a draft, attaches all assets, then publishes. A published immutable

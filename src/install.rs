@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `install`, `uninstall`, the WSL shim and the user PATH entry.
 
+use anyhow::Result;
+
+use crate::context::same_distro;
+use crate::spec::Context;
+use crate::store::ShimTarget;
+
 const SHIM_TEMPLATE: &str = include_str!("../res/shim.sh.tmpl");
 /// First-line marker: `uninstall` only deletes files that carry it.
 pub const SHIM_MARKER: &str = "# toastback WSL shim";
@@ -25,22 +31,40 @@ pub fn protocol_command(exe: &str) -> String {
 
 /// Parse `wsl.exe -l -q` output: UTF-16LE (with BOM/NULs) by default, UTF-8 with `WSL_UTF8=1`.
 pub fn parse_distro_list(bytes: &[u8]) -> Vec<String> {
-    let text = if bytes.len() >= 2 && bytes.iter().skip(1).step_by(2).any(|&b| b == 0) {
-        let units: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&c| u16::from_le_bytes(c))
-            .collect();
-        String::from_utf16_lossy(&units)
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
-    };
-    text.lines()
+    crate::exec::decode_output(bytes)
+        .lines()
         .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0'))
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Is `name` in a list of distros (names are case-insensitive)?
+pub fn has_distro(list: &[String], name: &str) -> bool {
+    list.iter().any(|d| same_distro(d, name))
+}
+
+/// Where `install --wsl <wsl>` writes the shim. The calling distro always gets the calling user
+/// (with `all` too); other distros get their default user. `list` runs only when needed.
+pub fn shim_targets(
+    wsl: Option<&str>,
+    ctx: &Context,
+    list: impl FnOnce() -> Result<Vec<String>>,
+) -> Result<Vec<ShimTarget>> {
+    let target = |distro: String| ShimTarget {
+        user: ctx.user.clone().filter(|_| {
+            ctx.distro
+                .as_deref()
+                .is_some_and(|c| same_distro(c, &distro))
+        }),
+        distro,
+    };
+    Ok(match (wsl, &ctx.distro) {
+        (Some("none"), _) => Vec::new(),
+        (Some("all"), _) | (None, None) => list()?.into_iter().map(target).collect(),
+        (Some(d), _) => vec![target(d.into())],
+        (None, Some(d)) => vec![target(d.clone())],
+    })
 }
 
 fn same_dir(a: &str, b: &str) -> bool {
@@ -90,7 +114,7 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
-    use anyhow::{Context as _, Result, bail, ensure};
+    use anyhow::{Context as _, Result, anyhow, bail, ensure};
     use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -106,12 +130,13 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, SHIM_MARKER, parse_distro_list, path_with, path_without,
-        protocol_command, render_shim,
+        CLI_EXE, GUI_EXE, SHIM_MARKER, has_distro, parse_distro_list, path_with, path_without,
+        protocol_command, render_shim, same_distro,
     };
     use crate::registry::{self, Kind};
     use crate::spec::Context;
     use crate::store::{ShimTarget, Store, timestamp};
+
     use crate::toast::{self, AUMID};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -130,6 +155,22 @@ mod imp {
     }
 
     pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
+        // one listing (wsl.exe can take a while) for the shim targets and the install record
+        let distros = list_distros();
+        let listed = || match &distros {
+            Ok(d) => Ok(d.clone()),
+            Err(e) => Err(anyhow!("{e:#}")),
+        };
+        // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
+        // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
+        let targets = match super::shim_targets(opts.wsl, ctx, listed) {
+            Ok(t) => t,
+            Err(e) if opts.wsl.is_none() => {
+                errln!("warning: no WSL shim written: {e:#}");
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         // both exes ship side by side; install from whichever one is running
         let me = std::env::current_exe()?;
         let src_dir = me.parent().context("exe has no directory")?;
@@ -147,7 +188,7 @@ mod imp {
         if cli.exists() {
             copy_exe(&cli, &store.bin_dir().join(CLI_EXE))?;
         }
-        println!(
+        outln!(
             "installed {} (written fresh, so no \"downloaded from the internet\" marker carries over)",
             store.bin_dir().display()
         );
@@ -165,34 +206,36 @@ mod imp {
             &protocol_command(&exe.to_string_lossy()),
             Kind::Plain,
         )?;
-        println!("registered the toastback:// handler and the notification app id");
+        outln!("registered the toastback:// handler and the notification app id");
 
         let mut record = store.install_record()?.unwrap_or_default();
         // forget shims in distros that were removed since (`wsl --unregister`)
-        if let Ok(existing) = list_distros() {
-            record.shims.retain(|t| existing.contains(&t.distro));
+        if let Ok(existing) = &distros {
+            record.shims.retain(|t| has_distro(existing, &t.distro));
         }
         if opts.add_to_path {
             if add_to_path(&store.bin_dir().to_string_lossy())? {
-                println!(
+                outln!(
                     "added {} to your user PATH (new terminals see it)",
                     store.bin_dir().display()
                 );
             } else {
-                println!("{} is already on your user PATH", store.bin_dir().display());
+                outln!("{} is already on your user PATH", store.bin_dir().display());
             }
             record.path_added = true;
         }
 
         let shim = render_shim(version, &exe.to_string_lossy());
-        for t in &shim_targets(opts.wsl, ctx)? {
+        for t in &targets {
             match write_shim(t, &shim) {
                 Ok(()) => {
-                    if !record.shims.contains(t) {
-                        record.shims.push(t.clone());
-                    }
+                    // the same distro under another spelling replaces the old entry
+                    record
+                        .shims
+                        .retain(|r| !(same_distro(&r.distro, &t.distro) && r.user == t.user));
+                    record.shims.push(t.clone());
                 }
-                Err(e) => eprintln!("warning: shim for {}: {e:#}", t.distro),
+                Err(e) => errln!("warning: shim for {}: {e:#}", t.distro),
             }
         }
         record.version = version.into();
@@ -266,34 +309,6 @@ mod imp {
         }
     }
 
-    fn shim_targets(wsl: Option<&str>, ctx: &Context) -> Result<Vec<ShimTarget>> {
-        let all = || -> Result<Vec<ShimTarget>> {
-            Ok(list_distros()?
-                .into_iter()
-                .map(|distro| ShimTarget { distro, user: None })
-                .collect())
-        };
-        Ok(match wsl {
-            Some("none") => Vec::new(),
-            Some("all") => all()?,
-            Some(d) => vec![ShimTarget {
-                distro: d.into(),
-                // the calling distro gets the calling user; others their default user
-                user: ctx
-                    .user
-                    .clone()
-                    .filter(|_| ctx.distro.as_deref() == Some(d)),
-            }],
-            None => match &ctx.distro {
-                Some(d) => vec![ShimTarget {
-                    distro: d.clone(),
-                    user: ctx.user.clone(),
-                }],
-                None => all()?,
-            },
-        })
-    }
-
     pub fn list_distros() -> Result<Vec<String>> {
         let out = Command::new("wsl.exe")
             .args(["-l", "-q"])
@@ -357,7 +372,7 @@ mod imp {
             .user
             .as_deref()
             .map_or(String::new(), |u| format!(" ({u})"));
-        println!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
+        outln!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
         // the user's login shell decides PATH; zsh users set it in .zshenv, bash users in .profile
         let path = wsl_sh(
             t,
@@ -367,7 +382,7 @@ mod imp {
         .unwrap_or_default();
         let bin = format!("{home}/.local/bin");
         if !path.split(':').any(|p| p == bin || p == "~/.local/bin") {
-            println!(
+            outln!(
                 "  note: {bin} is not on PATH in {}; add it to your shell profile",
                 t.distro
             );
@@ -382,30 +397,30 @@ mod imp {
         );
         let existing = list_distros().ok();
         for t in record.iter().flat_map(|r| &r.shims) {
-            if existing.as_ref().is_some_and(|e| !e.contains(&t.distro)) {
-                println!(
+            if existing.as_ref().is_some_and(|e| !has_distro(e, &t.distro)) {
+                outln!(
                     "skipped the shim in {}: the distro no longer exists",
                     t.distro
                 );
                 continue;
             }
             match wsl_sh(t, &script, None) {
-                Ok(out) if out.contains("removed") => println!("removed the shim in {}", t.distro),
-                Ok(_) => println!("no toastback shim in {}", t.distro),
-                Err(e) => eprintln!("warning: shim in {}: {e:#}", t.distro),
+                Ok(out) if out.contains("removed") => outln!("removed the shim in {}", t.distro),
+                Ok(_) => outln!("no toastback shim in {}", t.distro),
+                Err(e) => errln!("warning: shim in {}: {e:#}", t.distro),
             }
         }
         if record.as_ref().is_some_and(|r| r.path_added)
             && remove_from_path(&store.bin_dir().to_string_lossy())?
         {
-            println!("removed {} from your user PATH", store.bin_dir().display());
+            outln!("removed {} from your user PATH", store.bin_dir().display());
         }
         if let Err(e) = toast::remove_all() {
-            eprintln!("warning: clearing toasts: {e:#}");
+            errln!("warning: clearing toasts: {e:#}");
         }
         registry::delete_tree(&aumid_key())?;
         registry::delete_tree(PROTOCOL_KEY)?;
-        println!("removed the registry keys");
+        outln!("removed the registry keys");
         store.remove_install_record()?;
 
         let target = if purge {
@@ -429,15 +444,15 @@ mod imp {
         }
         let busy = running_from(target);
         if !busy.is_empty() {
-            eprintln!(
+            errln!(
                 "warning: {} other toastback process(es) still run from {}:",
                 busy.len(),
                 target.display()
             );
             for (pid, path) in &busy {
-                eprintln!("  pid {pid}  {}", path.display());
+                errln!("  pid {pid}  {}", path.display());
             }
-            eprintln!(
+            errln!(
                 "  These are callbacks that haven't finished or dialogs that are still open (see\n  \
                  `toastback log`). Their files stay until they exit. Afterwards, remove the rest\n  \
                  from PowerShell with:\n    & \"{}\" uninstall{}",
@@ -467,15 +482,15 @@ mod imp {
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .context("schedule deleting the install dir")?;
-            println!("{what} will be deleted in a moment");
+            outln!("{what} will be deleted in a moment");
         } else {
             match fs::remove_dir_all(target) {
-                Ok(()) => println!("deleted {what}"),
+                Ok(()) => outln!("deleted {what}"),
                 // files in use stay; the rest is gone (remove_dir_all stops at the first failure,
                 // so finish with a best-effort pass)
                 Err(_) if !busy.is_empty() => {
                     remove_unused(target);
-                    println!("deleted {what}");
+                    outln!("deleted {what}");
                 }
                 Err(e) => {
                     return Err(e).with_context(|| format!("delete {}", target.display()));
@@ -605,6 +620,38 @@ mod tests {
             ["FedoraLinux-44", "Ubuntu"]
         );
         assert!(parse_distro_list(b"").is_empty());
+    }
+
+    #[test]
+    fn shim_targets_keep_the_calling_user() {
+        let ctx = Context {
+            distro: Some("Ubuntu".into()),
+            user: Some("g".into()),
+            cwd: None,
+        };
+        let list = || Ok(vec!["ubuntu".to_string(), "Debian".to_string()]);
+        let t = |d: &str, u: Option<&str>| ShimTarget {
+            distro: d.into(),
+            user: u.map(Into::into),
+        };
+        assert_eq!(
+            shim_targets(Some("all"), &ctx, list).unwrap(),
+            [t("ubuntu", Some("g")), t("Debian", None)]
+        );
+        assert_eq!(
+            shim_targets(None, &ctx, || panic!("no listing needed")).unwrap(),
+            [t("Ubuntu", Some("g"))]
+        );
+        assert_eq!(
+            shim_targets(Some("Debian"), &ctx, list).unwrap(),
+            [t("Debian", None)]
+        );
+        assert!(shim_targets(Some("none"), &ctx, list).unwrap().is_empty());
+        assert_eq!(
+            shim_targets(None, &Context::default(), list).unwrap(),
+            [t("ubuntu", None), t("Debian", None)]
+        );
+        assert!(has_distro(&list().unwrap(), "UBUNTU"));
     }
 
     #[test]

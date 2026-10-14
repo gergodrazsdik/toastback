@@ -6,10 +6,10 @@ use std::io::{IsTerminal as _, Read as _};
 use anyhow::{Context as _, Result, bail};
 
 use crate::cli::ShowArgs;
-use crate::context;
 #[cfg(windows)]
 use crate::spec::Mode;
 use crate::spec::{Context, Spec};
+use crate::{context, exec};
 #[cfg(windows)]
 use crate::{dialog, install, store, toast};
 
@@ -24,24 +24,24 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
     let spec = match load_spec(args, ctx) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("toastback: {e:#}");
+            errln!("toastback: {e:#}");
             return EXIT_INVALID;
         }
     };
     match install::is_installed(store) {
         Ok(true) => {}
         _ => {
-            eprintln!("toastback: not installed; run `toastback.exe install` first");
+            errln!("toastback: not installed; run `toastback.exe install` first");
             return EXIT_NOT_INSTALLED;
         }
     }
     match show_spec(store, spec) {
         Ok(id) => {
-            println!("{id}");
+            outln!("{id}");
             0
         }
         Err((code, e)) => {
-            eprintln!("toastback: {e:#}");
+            errln!("toastback: {e:#}");
             code
         }
     }
@@ -53,9 +53,10 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
         Some("-") => read_stdin()?,
         Some(path) => {
             let path = context::to_windows_path(path, ctx)?;
-            std::fs::read_to_string(&path).with_context(|| format!("read {path}"))?
+            let bytes = std::fs::read(&path).with_context(|| format!("read {path}"))?;
+            decode_text(&bytes).with_context(|| format!("read {path}"))?
         }
-        None if flags.is_empty() => {
+        None if spec_from_stdin(&flags) => {
             if std::io::stdin().is_terminal() {
                 bail!("no spec: pass a FILE, - for stdin, or -t TITLE (see --help)");
             }
@@ -67,15 +68,87 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
     spec.apply(&flags);
     spec.context.fill_from(ctx);
     spec.validate()?;
+    if spec.context.cwd.is_none()
+        && let Ok(dir) = std::env::current_dir()
+    {
+        resolve_windows_cwds(&mut spec, &dir.to_string_lossy());
+    }
+    check_runs(&spec)?;
     Ok(spec)
 }
 
+/// Started from cmd or PowerShell (no shim, so no caller directory), a relative `cwd` of a
+/// Windows-side callback means the directory `toastback` runs in. The click handler runs
+/// elsewhere, so make it absolute now. (`wsl` callbacks need a Linux directory: still an error.)
+fn resolve_windows_cwds(spec: &mut Spec, dir: &str) {
+    let runs = spec.buttons.iter_mut().filter_map(|b| b.run.as_mut());
+    for run in runs.chain(spec.default.as_mut()) {
+        let windows_side = run.wsl.is_none(); // validated: exactly one kind
+        let Some(c) = run
+            .cwd
+            .as_mut()
+            .filter(|c| windows_side && !context::is_absolute(c))
+        else {
+            continue;
+        };
+        let resolved = if c.starts_with('\\') {
+            // `\logs`: the root of the current drive
+            dir.get(..2)
+                .filter(|d| d.ends_with(':'))
+                .map(|drive| format!("{drive}{c}"))
+        } else if c.as_bytes().get(1) == Some(&b':') {
+            // `D:sub`: relative to D:'s own current directory, which isn't known here; left for
+            // the show-time check to report
+            None
+        } else {
+            Some(format!(
+                r"{}\{}",
+                dir.trim_end_matches('\\'),
+                c.replace('/', "\\")
+            ))
+        };
+        if let Some(r) = resolved {
+            *c = r;
+        }
+    }
+}
+
+/// What would otherwise only fail at click time: a relative cwd without a caller directory, ...
+fn check_runs(spec: &Spec) -> Result<()> {
+    for b in &spec.buttons {
+        if let Some(r) = &b.run {
+            exec::check(r, &spec.context).with_context(|| format!("button {:?}: run", b.id))?;
+        }
+    }
+    if let Some(r) = &spec.default {
+        exec::check(r, &spec.context).context("default")?;
+    }
+    Ok(())
+}
+
+/// Without a FILE: -t or -m make a spec on their own; other flags (--mode, --id, -i, ...) only
+/// modify the one from stdin.
+fn spec_from_stdin(flags: &crate::spec::QuickFlags) -> bool {
+    flags.title.is_none() && flags.body.is_none()
+}
+
 fn read_stdin() -> Result<String> {
-    let mut s = String::new();
+    let mut bytes = Vec::new();
     std::io::stdin()
-        .read_to_string(&mut s)
+        .read_to_end(&mut bytes)
         .context("read spec from stdin")?;
-    Ok(s)
+    decode_text(&bytes).context("read spec from stdin")
+}
+
+/// Spec text as written by Windows tools too: UTF-8 with or without a BOM, or UTF-16 with one
+/// (Windows PowerShell's `Set-Content -Encoding UTF8`, `Out-File` and `>`).
+pub fn decode_text(bytes: &[u8]) -> Result<String> {
+    match bytes {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).context("invalid UTF-8"),
+        [0xFF, 0xFE, rest @ ..] => String::from_utf16le(rest).context("invalid UTF-16"),
+        [0xFE, 0xFF, rest @ ..] => String::from_utf16be(rest).context("invalid UTF-16"),
+        _ => String::from_utf8(bytes.to_vec()).context("invalid UTF-8 (save the file as UTF-8)"),
+    }
 }
 
 /// Show a validated spec: id, token, cached images, pending file, toast. Errors carry an exit code.
@@ -103,17 +176,18 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
             })
             .transpose()
     };
-    let icon_path = cache("icon", &spec.icon).map_err(invalid)?;
-    let image_path = cache("image", &spec.image).map_err(invalid)?;
+    let icon_path = cache(store::ICON, &spec.icon).map_err(invalid)?;
+    let image_path = cache(store::IMAGE, &spec.image).map_err(invalid)?;
 
     let now = unix_now();
     let pending = Pending {
         token: new_token().map_err(failed)?,
         created: now,
-        expires_at: now + spec.expires().map_err(invalid)?.as_secs(),
+        expires_at: now + spec.lifetime().map_err(invalid)?.as_secs(),
         done: false,
         icon_path,
         image_path,
+        dialog_open: false,
         spec,
     };
     store.save_pending(&pending).map_err(failed)?;
@@ -129,8 +203,8 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
         }
         Mode::Dialog => {
             // a separate process shows the dialog, so the caller returns right away
-            let spawned =
-                install::gui_exe().and_then(|exe| dialog::spawn_detached(&exe, &["__dialog", &id]));
+            let spawned = install::gui_exe()
+                .and_then(|exe| dialog::spawn_detached(&exe, &["__dialog", "--", &id]));
             if let Err(e) = spawned {
                 let _ = store.remove_pending(&id);
                 return Err(failed(e));
@@ -158,4 +232,83 @@ pub fn validate_file(file: &str, ctx: &Context) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_windows_encodings() {
+        let json = r#"{"title": "Jörg"}"#;
+        let utf16le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(json.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let utf16be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(json.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let bom: Vec<u8> = [0xEF, 0xBB, 0xBF].into_iter().chain(json.bytes()).collect();
+        for bytes in [json.as_bytes(), &bom, &utf16le, &utf16be] {
+            assert_eq!(decode_text(bytes).unwrap(), json);
+        }
+        assert!(decode_text(&[0xFF, 0xFE, 0x41]).is_err());
+        assert!(decode_text(&[0xC3]).is_err());
+    }
+
+    #[test]
+    fn only_title_and_body_replace_stdin() {
+        use crate::spec::{Mode, QuickFlags};
+        assert!(spec_from_stdin(&QuickFlags::default()));
+        assert!(spec_from_stdin(&QuickFlags {
+            mode: Some(Mode::Dialog),
+            id: Some("build-42".into()),
+            icon: Some("i.png".into()),
+            details: Some("d".into()),
+            ..Default::default()
+        }));
+        assert!(!spec_from_stdin(&QuickFlags {
+            title: Some("t".into()),
+            ..Default::default()
+        }));
+        assert!(!spec_from_stdin(&QuickFlags {
+            body: Some("b".into()),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn relative_windows_cwds_resolve_against_the_current_dir() {
+        let mut spec = Spec::parse(
+            r#"{"title": "t", "default": {"pwsh": "x", "cwd": "sub/dir"},
+                "buttons": [{"id": "w", "label": "W", "run": {"wsl": "x", "cwd": "sub"}},
+                            {"id": "a", "label": "A", "run": {"cmd": "x", "cwd": "D:\\abs"}},
+                            {"id": "r", "label": "R", "run": {"pwsh": "x", "cwd": "\\logs"}},
+                            {"id": "d", "label": "D", "run": {"pwsh": "x", "cwd": "D:sub"}}]}"#,
+        )
+        .unwrap();
+        resolve_windows_cwds(&mut spec, r"C:\work\");
+        let cwd = |i: usize| spec.buttons[i].run.as_ref().unwrap().cwd.clone();
+        assert_eq!(cwd(0).as_deref(), Some("sub"));
+        assert_eq!(cwd(1).as_deref(), Some(r"D:\abs"));
+        // rooted: the current drive's root; drive-relative: left alone (the check reports it)
+        assert_eq!(cwd(2).as_deref(), Some(r"C:\logs"));
+        assert_eq!(cwd(3).as_deref(), Some("D:sub"));
+        assert_eq!(
+            spec.default.unwrap().cwd.as_deref(),
+            Some(r"C:\work\sub\dir")
+        );
+    }
+
+    #[test]
+    fn click_time_errors_surface_at_show_time() {
+        let spec = Spec::parse(
+            r#"{"title": "t", "context": {"distro": "D"},
+                "buttons": [{"id": "b", "label": "B", "run": {"cmd": "dir", "cwd": "/home/g"}}]}"#,
+        )
+        .unwrap();
+        let e = format!("{:#}", check_runs(&spec).unwrap_err());
+        assert!(e.contains(r#"button "b": run"#) && e.contains("UNC"), "{e}");
+    }
 }

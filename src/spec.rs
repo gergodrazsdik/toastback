@@ -10,7 +10,14 @@ use serde::{Deserialize, Serialize};
 pub const MAX_BUTTONS: usize = 5;
 /// Action id for a click on the toast body.
 pub const BODY_ACTION: &str = "__body";
-pub const DEFAULT_EXPIRES: &str = "7d";
+/// Default `expires`: toasts can't outlive 3 days anyway, dialogs keep a week.
+pub const DEFAULT_EXPIRES_TOAST: Duration = MAX_TOAST_LIFETIME;
+pub const DEFAULT_EXPIRES_DIALOG: Duration = Duration::from_secs(7 * 86400);
+/// Windows keeps a toast in the notification center for at most 3 days: after that nothing can be
+/// clicked, so a toast's pending record doesn't need to outlive it. Dialogs have no such limit.
+pub const MAX_TOAST_LIFETIME: Duration = Duration::from_secs(3 * 86400);
+/// Upper bound for `expires`.
+pub const MAX_EXPIRES: Duration = Duration::from_secs(365 * 86400);
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -100,9 +107,17 @@ pub struct Context {
 
 impl Context {
     /// Fill the fields the spec left empty. A context written in the spec wins over the shim's.
+    /// The caller's user and directory belong to the caller's distro: a spec that names another
+    /// distro doesn't get them (it runs as that distro's default user, in its home directory).
+    /// A caller whose distro isn't known keeps them.
     pub fn fill_from(&mut self, other: &Context) {
+        let other_distro =
+            crate::context::is_other_distro(self.distro.as_deref(), other.distro.as_deref());
         if self.distro.is_none() {
             self.distro.clone_from(&other.distro);
+        }
+        if other_distro {
+            return;
         }
         if self.user.is_none() {
             self.user.clone_from(&other.user);
@@ -216,18 +231,6 @@ pub struct QuickFlags {
     pub scenario: Option<Scenario>,
 }
 
-impl QuickFlags {
-    pub fn is_empty(&self) -> bool {
-        self.id.is_none()
-            && self.title.is_none()
-            && self.body.is_none()
-            && self.details.is_none()
-            && self.icon.is_none()
-            && self.mode.is_none()
-            && self.scenario.is_none()
-    }
-}
-
 impl Spec {
     pub fn parse(json: &str) -> Result<Spec> {
         serde_json::from_str(json).context("invalid spec JSON")
@@ -258,7 +261,20 @@ impl Spec {
     }
 
     pub fn expires(&self) -> Result<Duration> {
-        parse_duration(self.expires.as_deref().unwrap_or(DEFAULT_EXPIRES))
+        let default = match self.mode {
+            Mode::Toast => DEFAULT_EXPIRES_TOAST,
+            Mode::Dialog => DEFAULT_EXPIRES_DIALOG,
+        };
+        self.expires.as_deref().map_or(Ok(default), parse_duration)
+    }
+
+    /// How long the notification stays clickable: `expires`, capped at 3 days for toasts.
+    pub fn lifetime(&self) -> Result<Duration> {
+        let e = self.expires()?;
+        Ok(match self.mode {
+            Mode::Toast => e.min(MAX_TOAST_LIFETIME),
+            Mode::Dialog => e,
+        })
     }
 
     /// Show an error toast when a callback fails (default: on).
@@ -301,8 +317,12 @@ impl Spec {
     pub fn validate(&self) -> Result<()> {
         if let Some(id) = &self.id {
             ensure!(
-                is_token(id, 64),
-                "id {id:?}: use 1-64 characters from A-Z a-z 0-9 . _ -"
+                is_token(id, 64) && !id.starts_with('-'),
+                "id {id:?}: use 1-64 characters from A-Z a-z 0-9 . _ - (not starting with -)"
+            );
+            ensure!(
+                !is_device_name(id),
+                "id {id:?}: CON, PRN, AUX, NUL, COM1-9 and LPT1-9 are reserved file names on Windows"
             );
         }
         ensure!(!self.title.trim().is_empty(), "title is required");
@@ -320,7 +340,8 @@ impl Spec {
         if self.on_click == Some(OnClick::Details) {
             ensure!(self.details.is_some(), "on_click \"details\" needs details");
         }
-        self.expires().context("expires")?;
+        let expires = self.expires().context("expires")?;
+        ensure!(expires <= MAX_EXPIRES, "expires: at most 365d");
         let mut seen = HashSet::new();
         for b in &self.buttons {
             ensure!(
@@ -352,6 +373,22 @@ pub fn is_token(s: &str, max: usize) -> bool {
         && s.len() <= max
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+/// An id that can name a pending file, a cached image and a toast tag: what [`Spec::validate`]
+/// allows, without the leading-`-` rule. That one only keeps new ids apart from options on the
+/// command line; 1.0.0 had no such rule, so its notifications may still carry one.
+pub fn is_safe_id(id: &str) -> bool {
+    is_token(id, 64) && !is_device_name(id)
+}
+
+/// A name Windows maps to a device whatever the extension (`NUL.json` is NUL).
+pub fn is_device_name(id: &str) -> bool {
+    let stem = id.split('.').next().unwrap_or(id).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 fn is_env_name(s: &str) -> bool {
@@ -435,7 +472,7 @@ mod tests {
         let s = spec(r#"{"title": "hi"}"#);
         s.validate().unwrap();
         assert_eq!(s.mode, Mode::Toast);
-        assert_eq!(s.expires().unwrap(), Duration::from_secs(7 * 86400));
+        assert_eq!(s.expires().unwrap(), Duration::from_secs(3 * 86400));
         assert_eq!(s.body_click(), OnClick::None);
         assert!(s.notify_on_error());
         assert!(!s.notify_on_success());
@@ -446,6 +483,11 @@ mod tests {
         let bad = [
             r#"{"body": "no title"}"#,
             r#"{"title": "x", "id": "has space"}"#,
+            r#"{"title": "x", "id": "-x"}"#,
+            r#"{"title": "x", "id": "NUL"}"#,
+            r#"{"title": "x", "id": "con.1"}"#,
+            r#"{"title": "x", "id": "Com7"}"#,
+            r#"{"title": "x", "expires": "400d"}"#,
             r#"{"title": "x", "scenario": "alarm"}"#,
             r#"{"title": "x", "on_click": "details"}"#,
             r#"{"title": "x", "expires": "7 weeks"}"#,
@@ -467,6 +509,28 @@ mod tests {
             .collect();
         let json = format!(r#"{{"title": "x", "buttons": [{}]}}"#, six.join(","));
         assert!(spec(&json).validate().is_err());
+    }
+
+    #[test]
+    fn ids_that_look_reserved_but_are_not() {
+        for id in ["console", "nul-1", "COM0", "COM10", "lpt", "x-NUL"] {
+            let s = spec(&format!(r#"{{"title": "x", "id": "{id}"}}"#));
+            s.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn toast_lifetime_is_capped() {
+        let toast = spec(r#"{"title": "x", "expires": "14d"}"#);
+        assert_eq!(toast.lifetime().unwrap(), MAX_TOAST_LIFETIME);
+        assert_eq!(
+            spec(r#"{"title": "x", "expires": "1h"}"#)
+                .lifetime()
+                .unwrap(),
+            Duration::from_secs(3600)
+        );
+        let dialog = spec(r#"{"title": "x", "mode": "dialog", "expires": "14d"}"#);
+        assert_eq!(dialog.lifetime().unwrap(), Duration::from_secs(14 * 86400));
     }
 
     #[test]
@@ -514,12 +578,52 @@ mod tests {
             ..Default::default()
         };
         c.fill_from(&Context {
-            distro: Some("Shim".into()),
+            distro: Some("spec".into()),
             user: Some("u".into()),
             cwd: None,
         });
         assert_eq!(c.distro.as_deref(), Some("Spec"));
         assert_eq!(c.user.as_deref(), Some("u"));
+
+        // another distro than the caller's: not the caller's user and directory
+        let mut other = Context {
+            distro: Some("Debian".into()),
+            ..Default::default()
+        };
+        other.fill_from(&Context {
+            distro: Some("Ubuntu".into()),
+            user: Some("g".into()),
+            cwd: Some("/home/g/proj".into()),
+        });
+        assert_eq!(other.distro.as_deref(), Some("Debian"));
+        assert_eq!((other.user, other.cwd), (None, None));
+
+        // a caller that passed its user and directory but no distro keeps them
+        let mut named = Context {
+            distro: Some("Ubuntu".into()),
+            ..Default::default()
+        };
+        named.fill_from(&Context {
+            distro: None,
+            user: Some("g".into()),
+            cwd: Some("/home/g/proj".into()),
+        });
+        assert_eq!(named.user.as_deref(), Some("g"));
+        assert_eq!(named.cwd.as_deref(), Some("/home/g/proj"));
+    }
+
+    #[test]
+    fn default_expiry_depends_on_the_mode() {
+        assert_eq!(
+            spec(r#"{"title": "x"}"#).expires().unwrap(),
+            MAX_TOAST_LIFETIME
+        );
+        assert_eq!(
+            spec(r#"{"title": "x", "mode": "dialog"}"#)
+                .expires()
+                .unwrap(),
+            Duration::from_secs(7 * 86400)
+        );
     }
 
     #[test]
