@@ -89,11 +89,19 @@ mod imp {
     use std::process::{Command, Stdio};
 
     use anyhow::{Context as _, Result, bail, ensure};
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
     };
-    use windows::core::w;
+    use windows::core::{PWSTR, w};
 
     use super::{
         CLI_EXE, GUI_EXE, SHIM_MARKER, parse_distro_list, path_with, path_without,
@@ -405,6 +413,33 @@ mod imp {
         if !target.exists() {
             return Ok(());
         }
+        let busy = running_from(target);
+        if !busy.is_empty() {
+            eprintln!(
+                "warning: {} other toastback process(es) still run from {}:",
+                busy.len(),
+                target.display()
+            );
+            for (pid, path) in &busy {
+                eprintln!("  pid {pid}  {}", path.display());
+            }
+            eprintln!(
+                "  These are callbacks that haven't finished or dialogs that are still open (see\n  \
+                 `toastback log`). Their files stay until they exit. Afterwards, remove the rest\n  \
+                 from PowerShell with:\n    & \"{}\" uninstall{}",
+                busy[0].1.display(),
+                if target.ends_with("bin") {
+                    ""
+                } else {
+                    " --purge"
+                }
+            );
+        }
+        let what = if busy.is_empty() {
+            target.display().to_string()
+        } else {
+            format!("the files of {} that aren't in use", target.display())
+        };
         let me = fs::canonicalize(std::env::current_exe()?)?;
         if me.starts_with(fs::canonicalize(target)?) {
             Command::new("cmd.exe")
@@ -418,12 +453,91 @@ mod imp {
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .context("schedule deleting the install dir")?;
-            println!("{} will be deleted in a moment", target.display());
+            println!("{what} will be deleted in a moment");
         } else {
-            fs::remove_dir_all(target).with_context(|| format!("delete {}", target.display()))?;
-            println!("deleted {}", target.display());
+            match fs::remove_dir_all(target) {
+                Ok(()) => println!("deleted {what}"),
+                // files in use stay; the rest is gone (remove_dir_all stops at the first failure,
+                // so finish with a best-effort pass)
+                Err(_) if !busy.is_empty() => {
+                    remove_unused(target);
+                    println!("deleted {what}");
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("delete {}", target.display()));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Delete everything under `dir` that isn't locked, ignoring failures.
+    fn remove_unused(dir: &Path) {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                remove_unused(&path);
+                let _ = fs::remove_dir(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// Other toastback processes whose exe lives under `dir`: callbacks still running, open dialogs.
+    fn running_from(dir: &Path) -> Vec<(u32, PathBuf)> {
+        let Ok(dir) = fs::canonicalize(dir) else {
+            return Vec::new();
+        };
+        let me = std::process::id();
+        let mut found = Vec::new();
+        // SAFETY: the snapshot handle is closed below; entry is a properly sized local struct.
+        unsafe {
+            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return found;
+            };
+            let mut entry = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut more = Process32FirstW(snap, &mut entry).is_ok();
+            while more {
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                let ours = name.eq_ignore_ascii_case(GUI_EXE) || name.eq_ignore_ascii_case(CLI_EXE);
+                if ours
+                    && entry.th32ProcessID != me
+                    && let Some(path) = image_path(entry.th32ProcessID)
+                    && fs::canonicalize(&path).is_ok_and(|p| p.starts_with(&dir))
+                {
+                    found.push((entry.th32ProcessID, path));
+                }
+                more = Process32NextW(snap, &mut entry).is_ok();
+            }
+            let _ = CloseHandle(snap);
+        }
+        found
+    }
+
+    /// Full path of a process's exe, if we may query it.
+    fn image_path(pid: u32) -> Option<PathBuf> {
+        // SAFETY: the handle is closed before returning; buf and len describe a local buffer.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let res = QueryFullProcessImageNameW(
+                h,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            );
+            let _ = CloseHandle(h);
+            res.ok()?;
+            Some(PathBuf::from(String::from_utf16_lossy(
+                &buf[..len as usize],
+            )))
+        }
     }
 
     pub fn is_installed(store: &Store) -> Result<bool> {

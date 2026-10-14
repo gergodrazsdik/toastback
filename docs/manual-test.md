@@ -68,3 +68,6 @@ covered by the smoke job, so here they only need to be checked once.
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer
     finds `toastback-cli`. **(CI: the registry keys)**
 27. `just install` again, then `toastback uninstall --purge`: `%LOCALAPPDATA%\toastback` is gone.
+28. `just install`, then start a long callback (for example **Snooze** in `examples/alarm.json`) and run `toastback uninstall` while
+    it's running. It warns with the callback's pid, and only `bin\toastback.exe` is left. Once the callback is done, the
+    printed command removes the rest.

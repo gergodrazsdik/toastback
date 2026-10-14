@@ -162,7 +162,8 @@ root: `just demo`, or `toastback examples/<name>.json`.
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
-- `toastback.exe` is unsigned: a browser download may trigger SmartScreen on first run. `install` writes a fresh
+- `toastback.exe` is unsigned: a browser download may trigger SmartScreen on first run, and Windows 11's Smart App
+  Control may hold or block a new build until it has a reputation. `install` writes a fresh
   copy, so clicks don't trigger "downloaded from the internet" prompts. The curl one-liner sets no download
   marker at all.
 - Dialogs show the built-in information/warning icons, not a custom `icon`.
@@ -173,6 +174,8 @@ root: `just demo`, or `toastback examples/<name>.json`.
   toastback and whether your WSL shim is current.
 - `toastback log` shows every click and callback, including stdout/stderr (last 8 KB each). The raw log
   is `%LOCALAPPDATA%\toastback\log\toastback.jsonl`.
+- `uninstall` warns when a callback or dialog is still running from the install folder. Those files stay
+  until it exits; the warning prints the command that removes the rest.
 - A click that seems to do nothing: check `toastback log`. A button with no `run` and no `default` only closes
   the toast; this is by design.
 
