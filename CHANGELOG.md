@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The README installs with download, check, review, run (`install.sh` plus `SHA256SUMS`) instead of piping
+  `install.sh` into bash. Releases also attest `install.sh`.
 - README: warn that `cmd` callbacks must not use `%TOASTBACK_TITLE%`, `%TOASTBACK_DATA%` or other `%VAR%`s holding
   untrusted text (cmd expands them before parsing `&`, `|`, …), with the safe patterns for `wsl` and `pwsh`.
+
+### Fixed
+
+- The WSL shim found no distro name when `WSL_DISTRO_NAME` was set but empty: `wslpath` fails then, so the
+  fallback now runs it without the variable. Re-run `install` to update the shim.
+- README: a repeated sentence under Limitations.
 
 ## [1.0.0] - 2026-10-14
 

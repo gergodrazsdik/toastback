@@ -65,7 +65,8 @@ covered by the smoke job, so here they only need to be checked once.
 
 29. From a systemd user service without the distro variable:
     `systemd-run --user --wait --pipe -p UnsetEnvironment=WSL_DISTRO_NAME ~/.local/bin/toastback -t from-systemd`
-    shows the toast, and `toastback log` / the pending context names the right distro.
+    shows the toast, and `toastback log` / the pending context names the right distro. The same with the variable
+    set but empty: `-p Environment=WSL_DISTRO_NAME=`.
 
 ## Uninstall
 
