@@ -176,6 +176,11 @@ mod imp {
         }
 
         checks.push(match install::list_distros() {
+            Ok(d) if d.is_empty() => Check::new(
+                "wsl.exe",
+                Warn,
+                "no WSL distros installed (only needed for wsl callbacks)",
+            ),
             Ok(d) => Check::new("wsl.exe", Good, format!("distros: {}", d.join(", "))),
             Err(e) => Check::new(
                 "wsl.exe",
