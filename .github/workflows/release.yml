@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  check-tag:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          version=$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match the Cargo.toml version $version"
+            exit 1
+          fi
+
+  ci:
+    needs: check-tag
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Package and publish
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release
+      id-token: write      # build provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: toastback-exe
+          path: dist
+
+      - name: Package
+        run: |
+          # asset names carry no version, so releases/latest/download/<name> URLs stay stable
+          mkdir -p pkg/examples pkg/res
+          cp dist/toastback.exe dist/toastback-cli.exe README.md LICENSE pkg/
+          cp examples/* pkg/examples/
+          cp res/icon.png pkg/res/
+          (cd pkg && zip -qr ../dist/toastback-x86_64.zip .)
+          cp scripts/install.sh dist/
+          (cd dist && sha256sum toastback.exe toastback-cli.exe toastback-x86_64.zip install.sh > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/toastback.exe
+            dist/toastback-cli.exe
+            dist/toastback-x86_64.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*

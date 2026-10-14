@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-pc-windows-msvc
+  CARGO_XWIN_VERSION: 0.23.1
+
+jobs:
+  build:
+    name: Build (Linux, cargo-xwin)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: clang, lld, llvm
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy clang lld llvm
+          # embed-resource and cargo-xwin want the unversioned names
+          for tool in llvm-rc lld-link; do
+            if ! command -v "$tool" >/dev/null; then
+              sudo ln -s "$(printf '%s\n' /usr/bin/"$tool"-* | sort -V | tail -1)" "/usr/local/bin/$tool"
+            fi
+          done
+          llvm-rc --version | head -1
+
+      - name: cargo-xwin (prebuilt wheel)
+        run: pipx install "cargo-xwin==$CARGO_XWIN_VERSION"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache the MSVC CRT and Windows SDK
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/cargo-xwin
+          key: xwin-${{ env.CARGO_XWIN_VERSION }}
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo xwin clippy --release --target "$TARGET" --all-targets -- -D warnings
+
+      - name: shellcheck
+        run: |
+          shellcheck scripts/*.sh examples/*.sh
+          shellcheck -s bash res/shim.sh.tmpl
+
+      - name: Host tests
+        run: cargo test --target x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo xwin build --release --target "$TARGET"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toastback-exe
+          path: |
+            target/x86_64-pc-windows-msvc/release/toastback.exe
+            target/x86_64-pc-windows-msvc/release/toastback-cli.exe
+          if-no-files-found: error
+
+  test:
+    name: Test (Windows, native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # showing toasts and dialogs stays out of CI; the unit tests don't need a desktop
+      - run: cargo test
+
+  smoke:
+    name: Smoke test the cross-built exe (Windows)
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: toastback-exe
+          path: dist
+      - name: version, validate, install, doctor, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tb = Join-Path $PWD 'dist\toastback-cli.exe'
+          function Invoke-Toastback {
+            & $tb @args
+            if ($LASTEXITCODE) { throw "toastback $args exited with $LASTEXITCODE" }
+          }
+
+          Invoke-Toastback --version
+          Invoke-Toastback validate (Get-ChildItem examples\*.json | ForEach-Object { "examples\$($_.Name)" })
+
+          # the "installed" test toast may fail on a runner without a desktop: install only warns then
+          Invoke-Toastback install --wsl none
+
+          $checks = & $tb doctor --json | ConvertFrom-Json
+          $checks | Format-Table -AutoSize
+          # notifications may be unavailable in a CI session: a warning here, not a failure
+          $failed = $checks | Where-Object { $_.status -eq 'fail' -and $_.name -ne 'notifications' }
+          if ($failed) { throw "doctor failed: $($failed.name -join ', ')" }
+
+          Invoke-Toastback uninstall --purge
+          foreach ($key in 'HKCU:\Software\Classes\toastback',
+                           'HKCU:\Software\Classes\AppUserModelId\Toastback') {
+            if (Test-Path $key) { throw "left behind: $key" }
+          }
+          if (Test-Path "$env:LOCALAPPDATA\toastback") { throw "left behind: $env:LOCALAPPDATA\toastback" }
+          'smoke test passed'

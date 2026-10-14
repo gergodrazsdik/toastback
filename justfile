@@ -28,13 +28,15 @@ build:
 run *args: build
     {{ exe }} {{ args }}
 
-# Format check, clippy for the Windows target (warnings as errors), shellcheck
+# Format check, clippy for the Windows target (warnings as errors), shellcheck, yamllint, actionlint
 [group('dev')]
 check:
     cargo fmt --check
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
     shellcheck scripts/*.sh examples/*.sh
     shellcheck -s bash res/shim.sh.tmpl
+    yamllint -s .github .yamllint
+    actionlint
 
 alias lint := check
 
@@ -70,3 +72,18 @@ demo:
 [group('try')]
 log n="20":
     toastback log -n {{ n }}
+
+# Bump the version, commit, tag and push; the release workflow builds and publishes it
+[group('release')]
+[confirm('Commit, tag and push this release to GitHub? [y/N]')]
+release version:
+    test -z "$(git status --porcelain)" || { echo "working tree not clean"; exit 1; }
+    [[ "{{ version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must look like 1.2.3"; exit 1; }
+    sed -i '/^\[package\]/,/^\[/ s/^version = ".*"/version = "{{ version }}"/' Cargo.toml
+    grep -q '^version = "{{ version }}"$' Cargo.toml || { echo "version not updated in Cargo.toml"; exit 1; }
+    cargo xwin build --release --target {{ target }}  # refreshes Cargo.lock
+    git commit -am "release v{{ version }}"
+    git tag -a "v{{ version }}" -m "v{{ version }}"
+    git push --follow-tags
+    sleep 10
+    gh run watch "$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')"

@@ -27,7 +27,14 @@ Status: early. v0.1 is being built; see [PLAN.md](PLAN.md).
 
 ```bash
 curl -fsSL https://github.com/gergodrazsdik/toastback/releases/latest/download/install.sh | bash
+# a specific version:   ... | TOASTBACK_VERSION=v0.1.0 bash
+# also for PowerShell:  ... | bash -s -- --add-to-path
 ```
+
+The script downloads `toastback.exe` and `toastback-cli.exe` into your Windows temp folder, checks them against
+the release's `SHA256SUMS` and runs `toastback.exe install`. Release builds also carry a
+[build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
+`gh attestation verify toastback.exe -R gergodrazsdik/toastback`.
 
 **On Windows only:** download `toastback-x86_64.zip` from the
 [releases](https://github.com/gergodrazsdik/toastback/releases), extract it anywhere, then run
@@ -162,8 +169,11 @@ root: `just demo`, or `toastback examples/<name>.json`.
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
-- `toastback.exe` is unsigned: a browser download may trigger SmartScreen on first run, and Windows 11's Smart App
-  Control may hold or block a new build until it has a reputation. `install` writes a fresh
+- **toastback is not code-signed yet.** With Windows 11's **Smart App Control** turned on, Windows blocks unsigned apps
+  it doesn't know, and that includes the downloaded `toastback.exe` ("An Application Control policy has blocked this
+  file"; `install.sh` reports it). Smart App Control has no per-app exceptions. Without it, a browser download may
+  still trigger SmartScreen on first run. `install` writes a fresh copy, so clicks don't trigger
+  "downloaded from the internet" prompts. `install` writes a fresh
   copy, so clicks don't trigger "downloaded from the internet" prompts. The curl one-liner sets no download
   marker at all.
 - Dialogs show the built-in information/warning icons, not a custom `icon`.
