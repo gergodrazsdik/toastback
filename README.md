@@ -169,9 +169,9 @@ root: `just demo`, or `toastback examples/<name>.json`.
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
-- **toastback is not code-signed yet.** With Windows 11's **Smart App Control** turned on, Windows blocks unsigned apps
-  it doesn't know, and that includes the downloaded `toastback.exe` ("An Application Control policy has blocked this
-  file"; `install.sh` reports it). Smart App Control has no per-app exceptions. Without it, a browser download may
+- **toastback is not code-signed yet.** With Windows 11's **Smart App Control** turned on, Windows may block unsigned
+  apps it doesn't know yet ("An Application Control policy has blocked this file"; `install.sh` reports it). Smart App
+  Control has no per-app exceptions. Without it, a browser download may
   still trigger SmartScreen on first run. `install` writes a fresh copy, so clicks don't trigger
   "downloaded from the internet" prompts. `install` writes a fresh
   copy, so clicks don't trigger "downloaded from the internet" prompts. The curl one-liner sets no download
