@@ -19,7 +19,8 @@ id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
   that must not be missed.
 - Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
 
-Status: early. v0.1 is being built; see [PLAN.md](PLAN.md).
+Status: v0.1 ([releases](https://github.com/gergodrazsdik/toastback/releases)). The design is in [PLAN.md](PLAN.md) and
+[docs/decisions/](docs/decisions/).
 
 ## Install
 
@@ -176,6 +177,8 @@ root: `just demo`, or `toastback examples/<name>.json`.
 
 ## Limitations
 
+- **Images:** local PNG or JPG files (WSL or Windows paths). Keep them small, under about 200 KB and 1024 px:
+  Windows silently drops images it considers too large.
 - **No dismiss callback.** Once `toastback` has exited, Windows tells nobody when a toast is dismissed or
   times out. Only clicks run callbacks.
 - **Focus assist / Do not disturb** hides toast banners (they still land in the notification center). Use
@@ -183,7 +186,7 @@ root: `just demo`, or `toastback examples/<name>.json`.
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
-- **toastback is not code-signed yet.** With Windows 11's **Smart App Control** turned on, Windows may block unsigned
+- **toastback isn't code-signed** (a deliberate choice, see [docs/decisions/004-m4.md](docs/decisions/004-m4.md)). With Windows 11's **Smart App Control** turned on, Windows may block unsigned
   apps it doesn't know yet ("An Application Control policy has blocked this file"; `install.sh` reports it). Smart App
   Control has no per-app exceptions. Without it, a browser download may
   still trigger SmartScreen on first run. `install` writes a fresh copy, so clicks don't trigger

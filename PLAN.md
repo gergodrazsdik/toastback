@@ -416,7 +416,7 @@ and `toastback -t hi -m there` shows a toast whose button callback runs in that 
 
 ## 12. Later (not v1)
 Text/select inputs (COM activator, values via `TOASTBACK_INPUT_*`), arm64 build, update/replace by id + progress bars,
-scheduled reminders (`ToastNotifier.AddToSchedule`), custom popup, code signing, scoop/winget manifests,
+scheduled reminders (`ToastNotifier.AddToSchedule`), custom popup, scoop/winget manifests,
 `toastback update` (self-update from GitHub Releases).
 
 ## 13. Working agreement for Claude Code

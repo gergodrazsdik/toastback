@@ -64,6 +64,14 @@ main() {
   unsigned apps it doesn't know yet. See https://github.com/$repo#limitations"
   fi
 
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *)
+      echo
+      echo "note: ~/.local/bin isn't on PATH in this shell yet. A new terminal (or \`exec bash -l\`) usually picks it"
+      echo "      up now that it exists. If not, add it to your shell profile."
+      ;;
+  esac
   cat <<'EOF'
 
 next steps:

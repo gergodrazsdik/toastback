@@ -73,6 +73,11 @@ demo:
 log n="20":
     toastback log -n {{ n }}
 
+# Check the installation (registration, notifications, WSL shim)
+[group('try')]
+doctor:
+    toastback doctor
+
 # Bump the version, commit, tag and push; the release workflow builds and publishes it
 [group('release')]
 [confirm('Commit, tag and push this release to GitHub? [y/N]')]
