@@ -167,7 +167,16 @@ Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override th
 
 Callbacks get `TOASTBACK_ID`, `TOASTBACK_ACTION` (the button id, or `__body`), `TOASTBACK_TITLE` and
 `TOASTBACK_DATA` (the `data` JSON) as environment variables. For WSL callbacks they (and `env`) are passed
-through `WSLENV`. Nothing from the notification is ever pasted into a command line.
+through `WSLENV`. toastback never pastes anything from the notification into a command line.
+
+**Don't let your command re-parse untrusted text.** If a title, `data` or `env` value can come from text you
+don't control (a script's output, an issue title, a file name), keep it a value, not code:
+
+- **`cmd`: avoid `%TOASTBACK_TITLE%`, `%TOASTBACK_DATA%` and `%VAR%`s from `env`.** cmd expands `%VAR%` *before*
+  it parses `&`, `|`, `>` and the rest, so a title like `x & del …` runs the second command. `%TOASTBACK_ID%` and
+  `%TOASTBACK_ACTION%` are safe (letters, digits, `.` `_` `-` only). Use `pwsh` or `exe` to work with other values.
+- **`wsl` (bash):** quote expansions, `"$TOASTBACK_TITLE"`, and never pass them to `eval`, `bash -c` or similar.
+- **`pwsh`:** `$env:TOASTBACK_TITLE` is just a string. Don't hand it to `Invoke-Expression`.
 
 ### Examples
 

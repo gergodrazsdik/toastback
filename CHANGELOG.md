@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README: warn that `cmd` callbacks must not use `%TOASTBACK_TITLE%`, `%TOASTBACK_DATA%` or other `%VAR%`s holding
+  untrusted text (cmd expands them before parsing `&`, `|`, …), with the safe patterns for `wsl` and `pwsh`.
+
 ## [1.0.0] - 2026-10-14
 
 First public release. (A v0.1.0 test release was published and withdrawn; its `install.sh` didn't work.)
