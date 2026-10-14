@@ -1,18 +1,195 @@
 # toastback
 
-Async Windows toasts with callbacks, for WSL and scripts.
+Async Windows toast notifications with callbacks, for WSL and scripts.
 
-Early development: nothing usable yet.
+`toastback` shows a toast (or a native dialog) and **returns immediately**. When someone clicks a button,
+even hours later from the notification center, Windows starts `toastback` again and it runs the command
+attached to that button: in **WSL** (by default in the distro, user and directory that sent the notification) or
+on **Windows**.
 
-## Building
-
-Built from WSL for Windows (`x86_64-pc-windows-msvc`) with [cargo-xwin](https://github.com/rust-cross/cargo-xwin). Needs rustup (the toolchain is pinned in `rust-toolchain.toml`), clang, lld, llvm and [just](https://github.com/casey/just).
-
-```sh
-just build   # target/x86_64-pc-windows-msvc/release/toastback.exe
-just run     # build, then run the .exe from WSL
-just lint    # rustfmt + clippy
+```bash
+toastback -t "Backup finished" -m "42 GB in 12 min"      # simple alert, prints the notification id
+toastback examples/deploy.json                           # buttons that run commands
+id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
 ```
+
+- Single self-contained exe, no runtime. Windows 10 22H2+ / Windows 11, per-user install, no admin rights.
+- Buttons run commands in WSL (`bash -lc` or an argv), cmd, PowerShell, any exe, or open a URL/file.
+- Click a toast's text to open a details dialog with the same buttons, or use `mode: dialog` for prompts
+  that must not be missed.
+- Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
+
+Status: early. v0.1 is being built; see [PLAN.md](PLAN.md).
+
+## Install
+
+**From WSL** (once a release is published):
+
+```bash
+curl -fsSL https://github.com/gergodrazsdik/toastback/releases/latest/download/install.sh | bash
+```
+
+**On Windows only:** download `toastback-x86_64.zip` from the
+[releases](https://github.com/gergodrazsdik/toastback/releases), extract it anywhere, then run
+`toastback.exe install --wsl all --add-to-path` (or `--wsl none` without WSL).
+
+**From source** (in WSL, with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), clang/lld/llvm and
+[just](https://github.com/casey/just)): `just setup` once, then `just install`.
+
+`install` copies `toastback.exe` and `toastback-cli.exe` to `%LOCALAPPDATA%\toastback\bin`, registers the
+`toastback://` protocol and the notification app id (HKCU only), writes the WSL shim
+`~/.local/bin/toastback` and shows a test notification. Re-run it to upgrade. `toastback doctor` checks
+everything; `toastback uninstall [--purge]` removes it all (`--purge` also deletes logs and pending
+notifications).
+
+| Option | Meaning |
+|---|---|
+| `--wsl DISTRO\|all\|none` | where to write the WSL shim (default: the distro you run it from, else all) |
+| `--add-to-path` | add the install dir to your user PATH, for `toastback-cli` in cmd/PowerShell |
+
+## Usage
+
+```
+toastback [show] [FILE | -] [-t TITLE] [-m BODY] [-d DETAILS] [-i ICON]
+                 [--mode toast|dialog] [--scenario default|reminder|alarm|urgent] [--id ID]
+```
+
+The spec comes from `FILE`, from stdin (`-`, or when no `-t`/`-m` is given), or only from flags. Flags
+override fields of the spec. `toastback` prints the notification id and exits:
+
+| Exit code | Meaning |
+|---|---|
+| 0 | shown (the id is on stdout) |
+| 2 | invalid spec or unreadable image |
+| 3 | failed to show |
+| 4 | not installed |
+
+Other commands:
+
+| Command | What it does |
+|---|---|
+| `toastback log [-n N] [--id ID]` | recent events: shown, clicked, callback output and exit codes |
+| `toastback validate FILE...` | check specs (and their images) without showing them; exit 2 if any is invalid |
+| `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
+| `toastback doctor [--json]` | check install, registration, notification settings, WSL and the shim |
+| `toastback shim [--win-exe PATH]` | print the WSL shim |
+| `toastback --version` | version and git commit |
+
+### From PowerShell or cmd
+
+Use **`toastback-cli`** (after `install --add-to-path`, or by its full path). It's the same program built as a
+console app, so the shell waits for it, prints its output in order and sets `$LASTEXITCODE`. `toastback.exe`
+is a GUI app (so that clicking a button never flashes a console window), and interactive shells don't wait
+for those.
+
+```powershell
+$id = toastback-cli -t "Build done" -m "Release build finished in 4 min"
+toastback-cli C:\specs\deploy.json; if ($LASTEXITCODE) { throw "toastback failed" }
+```
+
+### From Task Scheduler
+
+Toasts need a user session: set the task to **Run only when user is logged on** (not "whether user is logged
+on or not", which runs in session 0 where toasts can't be shown). Action: program
+`%LOCALAPPDATA%\toastback\bin\toastback.exe`, arguments `C:\specs\backup-check.json`. The GUI exe opens no
+console window.
+
+## The spec
+
+```jsonc
+{
+  "id": "deploy-1234",              // optional: generated if absent ([A-Za-z0-9._-], max 64)
+  "mode": "toast",                  // toast | dialog
+  "title": "Deploy to production?", // required
+  "body": "Build 1234 passed all checks.",
+  "details": "Long text…",          // shown in a dialog when the toast body is clicked
+  "icon": "/home/g/icons/rocket.png",   // PNG/JPG, WSL or Windows path (copied to a cache)
+  "image": null,                    // larger inline image
+  "attribution": "CI",              // small grey line
+  "scenario": "default",            // default | reminder | alarm | urgent (reminder/alarm stay on screen; need a button)
+  "sound": "default",               // default | silent | alarm | reminder
+  "expires": "7d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m)
+  "on_click": "details",            // body click: details | default | none (default: details if set, else default)
+  "buttons": [                      // up to 5
+    { "id": "deploy", "label": "Deploy", "style": "success",   // style: success | critical (Windows 11)
+      "run": { "wsl": "./scripts/deploy.sh --env prod" } },
+    { "id": "later", "label": "Not now" }                      // no run: uses "default", else just closes
+  ],
+  "default": { "wsl": "echo \"$TOASTBACK_ACTION\" >> ~/clicks.log" },   // handler for buttons without run
+  "data": { "build": 1234 },        // any JSON, passed to callbacks as TOASTBACK_DATA
+  "notify_on_error": true,          // "failed" toast when a callback fails (default: true)
+  "notify_on_success": false,       // "done" toast when it succeeds (default: false)
+  "context": { "distro": "Ubuntu-24.04", "user": "g", "cwd": "/home/g/app" }   // normally filled by the shim
+}
+```
+
+Unknown fields are errors, so typos don't go unnoticed. Each notification handles **one** click; after it, the
+toast is removed and later clicks are ignored (and logged).
+
+### Callbacks (`run`)
+
+Exactly one of:
+
+| Form | Runs |
+|---|---|
+| `{"wsl": "string"}` | `wsl.exe -d <distro> -u <user> --cd <cwd> --exec bash -lc "<string>"`: your login profile, so your PATH |
+| `{"wsl": ["argv", …]}` | the argv directly, no shell (and no login profile) |
+| `{"cmd": "string"}` | `cmd.exe /d /s /c "<string>"` |
+| `{"pwsh": "string"}` | PowerShell 7 (`pwsh`), else Windows PowerShell, via `-EncodedCommand` (no quoting issues) |
+| `{"exe": ["C:\\path\\x.exe", "arg"]}` | the program directly |
+| `{"open": "url-or-path"}` | the default app for a URL, file or folder (`%VAR%`s are expanded) |
+
+Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override the context) and `"timeout": "5m"`
+(the callback is killed after it). Windows-side callbacks run in your profile folder unless `cwd` is set.
+
+Callbacks get `TOASTBACK_ID`, `TOASTBACK_ACTION` (the button id, or `__body`), `TOASTBACK_TITLE` and
+`TOASTBACK_DATA` (the `data` JSON) as environment variables. For WSL callbacks they (and `env`) are passed
+through `WSLENV`. Nothing from the notification is ever pasted into a command line.
+
+### Examples
+
+[examples/](examples/) has one spec per feature: `simple`, `images`, `deploy` (buttons, details, data),
+`default-handler`, `alarm`, `reboot-dialog` (dialog mode), `feedback` (done/failed toasts), `wsl-options`
+(argv, env, cwd, timeout) and `windows-callbacks` (cmd, PowerShell, exe, open). Run them from the repository
+root: `just demo`, or `toastback examples/<name>.json`.
+
+## Limitations
+
+- **No dismiss callback.** Once `toastback` has exited, Windows tells nobody when a toast is dismissed or
+  times out. Only clicks run callbacks.
+- **Focus assist / Do not disturb** hides toast banners (they still land in the notification center). Use
+  `"mode": "dialog"` or `"scenario": "alarm"` for prompts that must be seen.
+- Buttons in the notification center appear once you expand the notification.
+- Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
+- The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
+- `toastback.exe` is unsigned: a browser download may trigger SmartScreen on first run. `install` writes a fresh
+  copy, so clicks don't trigger "downloaded from the internet" prompts. The curl one-liner sets no download
+  marker at all.
+- Dialogs show the built-in information/warning icons, not a custom `icon`.
+
+## Troubleshooting
+
+- `toastback doctor` checks the install, the protocol registration, whether notifications are enabled for
+  toastback and whether your WSL shim is current.
+- `toastback log` shows every click and callback, including stdout/stderr (last 8 KB each). The raw log
+  is `%LOCALAPPDATA%\toastback\log\toastback.jsonl`.
+- A click that seems to do nothing: check `toastback log`. A button with no `run` and no `default` only closes
+  the toast; this is by design.
+
+## Development
+
+Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. `just` lists the recipes:
+
+| Recipe | |
+|---|---|
+| `just build` | release build of both exes |
+| `just check` | rustfmt, clippy (Windows target, warnings as errors), shellcheck |
+| `just test` | unit tests on Linux and on Windows (through WSL interop), then `validate` on every example |
+| `just install` | build and install for the current distro |
+| `just demo` / `just log` | show every example / recent events |
+
+Design notes and decisions are in [docs/decisions/](docs/decisions/); the manual test checklist is
+[docs/manual-test.md](docs/manual-test.md).
 
 ## License
 

@@ -1,0 +1,14 @@
+{
+  "title": "Stand-up in 5 minutes",
+  "body": "Alarm toasts stay on screen and loop their sound until you pick a button.",
+  "scenario": "alarm",
+  "sound": "alarm",
+  "expires": "1h",
+  "buttons": [
+    { "id": "join", "label": "Join", "style": "success",
+      "run": { "open": "https://meet.example.com/standup" } },
+    { "id": "snooze", "label": "Snooze 5 min",
+      "run": { "wsl": "sleep 300 && toastback examples/alarm.json", "timeout": "10m" } },
+    { "id": "skip", "label": "Skip", "style": "critical" }
+  ]
+}

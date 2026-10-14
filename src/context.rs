@@ -24,7 +24,8 @@ pub fn to_windows_path(p: &str, ctx: &Context) -> Result<String> {
         p.to_string()
     } else {
         let Some(cwd) = &ctx.cwd else {
-            bail!("{p:?} is relative and the caller's cwd is unknown (use an absolute path)");
+            // no caller context (run without the shim): relative to this process's cwd
+            return Ok(p.replace('/', "\\"));
         };
         format!("{cwd}/{p}")
     };
@@ -109,7 +110,10 @@ mod tests {
     fn needs_context() {
         let empty = Context::default();
         assert!(to_windows_path("/home/g/a.png", &empty).is_err());
-        assert!(to_windows_path("a.png", &empty).is_err());
+        assert_eq!(
+            to_windows_path("icons/a.png", &empty).unwrap(),
+            r"icons\a.png"
+        );
         assert_eq!(
             to_windows_path("/mnt/c/a.png", &empty).unwrap(),
             r"C:\a.png"

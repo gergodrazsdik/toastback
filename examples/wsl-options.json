@@ -1,0 +1,11 @@
+{
+  "title": "WSL callback options",
+  "body": "argv form (no shell), extra env, a cwd override and a timeout.",
+  "notify_on_success": true,
+  "buttons": [
+    { "id": "argv", "label": "ls /tmp (argv)",
+      "run": { "wsl": ["ls", "-la", "/tmp"], "cwd": "/tmp" } },
+    { "id": "env", "label": "env + cwd",
+      "run": { "wsl": "echo \"$GREETING from $PWD\"", "env": { "GREETING": "hello" }, "cwd": "/etc" } }
+  ]
+}

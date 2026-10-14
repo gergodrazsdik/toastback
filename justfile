@@ -43,6 +43,8 @@ alias lint := check
 test:
     cargo test --target {{ host }}
     CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=/usr/bin/env cargo xwin test --target {{ target }}
+    cargo xwin build --target {{ target }}
+    target/{{ target }}/debug/toastback.exe validate examples/*.json
 
 # Format the code
 [group('dev')]

@@ -166,7 +166,6 @@ mod imp {
     }
 
     /// `Ok(None)` before the first toast was shown (Windows has no settings entry yet).
-    #[allow(dead_code)] // used by `doctor` (M3)
     pub fn setting() -> Result<Option<NotificationSetting>> {
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
         match notifier.Setting() {

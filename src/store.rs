@@ -118,6 +118,27 @@ impl Store {
         self.remove_cached(id)
     }
 
+    /// Ids of all pending notifications.
+    pub fn pending_ids(&self) -> Result<Vec<String>> {
+        let entries = match fs::read_dir(self.pending_dir()) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).context("read pending dir"),
+        };
+        let mut ids = Vec::new();
+        for entry in entries {
+            if let Some(id) = entry?
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".json"))
+            {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
     /// Delete pending files (and their cached images) whose notification expired. Returns the ids.
     pub fn prune(&self, now: u64) -> Result<Vec<String>> {
         let mut pruned = Vec::new();

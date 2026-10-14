@@ -1,0 +1,10 @@
+{
+  "title": "Feedback toasts",
+  "body": "notify_on_success shows a small \"done\" toast; notify_on_error (on by default) a \"failed\" one.",
+  "notify_on_success": true,
+  "buttons": [
+    { "id": "ok", "label": "Succeed", "run": { "wsl": "echo everything worked" } },
+    { "id": "fail", "label": "Fail", "run": { "wsl": "echo 'disk full' >&2; exit 1" } },
+    { "id": "slow", "label": "Time out", "run": { "wsl": "sleep 30", "timeout": "3s" } }
+  ]
+}

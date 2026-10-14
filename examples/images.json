@@ -1,0 +1,7 @@
+{
+  "title": "New build artifact",
+  "body": "Icons and images can be WSL or Windows paths; relative paths resolve against your cwd.",
+  "icon": "res/icon.png",
+  "image": "res/icon.png",
+  "sound": "silent"
+}

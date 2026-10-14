@@ -167,6 +167,7 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use anyhow::{Context as _, Result, bail};
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR, w};
@@ -185,7 +186,7 @@ mod imp {
                     ShellExecuteW(
                         None,
                         w!("open"),
-                        &HSTRING::from(target.as_str()),
+                        &HSTRING::from(expand_env(target)),
                         PCWSTR::null(),
                         dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
                         SW_SHOWNORMAL,
@@ -265,6 +266,24 @@ mod imp {
                     stderr: tail(&err.join().unwrap_or_default()),
                 })
             }
+        }
+    }
+
+    /// Expand `%VAR%` references (ShellExecute doesn't). Unknown variables stay as they are.
+    fn expand_env(s: &str) -> String {
+        let src = HSTRING::from(s);
+        // SAFETY: first call only asks for the size; the buffer then has exactly that many units.
+        unsafe {
+            let n = ExpandEnvironmentStringsW(&src, None);
+            if n == 0 {
+                return s.to_string();
+            }
+            let mut buf = vec![0u16; n as usize];
+            let written = ExpandEnvironmentStringsW(&src, Some(&mut buf));
+            if written == 0 || written > n {
+                return s.to_string();
+            }
+            String::from_utf16_lossy(&buf[..written as usize - 1])
         }
     }
 

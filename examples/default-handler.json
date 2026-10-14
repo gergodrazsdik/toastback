@@ -1,0 +1,13 @@
+{
+  "title": "Pick a color",
+  "body": "Every button (and a click on this text) goes to the one default handler.",
+  "on_click": "default",
+  "buttons": [
+    { "id": "red", "label": "Red" },
+    { "id": "green", "label": "Green" },
+    { "id": "blue", "label": "Blue" }
+  ],
+  "default": { "wsl": "echo \"$(date -Is) $TOASTBACK_ACTION $TOASTBACK_DATA\" >> ~/toastback-colors.log" },
+  "data": { "asked_by": "default-handler.json" },
+  "notify_on_success": true
+}

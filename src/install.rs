@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `install`, `uninstall` and the WSL shim.
+//! `install`, `uninstall`, the WSL shim and the user PATH entry.
 
 const SHIM_TEMPLATE: &str = include_str!("../res/shim.sh.tmpl");
 /// First-line marker: `uninstall` only deletes files that carry it.
 pub const SHIM_MARKER: &str = "# toastback WSL shim";
+pub const GUI_EXE: &str = "toastback.exe";
+pub const CLI_EXE: &str = "toastback-cli.exe";
 
 /// Render the WSL shim for an installed exe at `win_exe` (a Windows path).
 pub fn render_shim(version: &str, win_exe: &str) -> String {
@@ -12,6 +14,11 @@ pub fn render_shim(version: &str, win_exe: &str) -> String {
     SHIM_TEMPLATE
         .replace("{{VERSION}}", version)
         .replace("{{WIN_EXE_PATH}}", &quoted)
+}
+
+/// The protocol handler command registered for `toastback://`.
+pub fn protocol_command(exe: &str) -> String {
+    format!("\"{exe}\" activate \"%1\"")
 }
 
 /// Parse `wsl.exe -l -q` output: UTF-16LE (with BOM/NULs) by default, UTF-8 with `WSL_UTF8=1`.
@@ -34,6 +41,42 @@ pub fn parse_distro_list(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+fn same_dir(a: &str, b: &str) -> bool {
+    a.trim_end_matches('\\')
+        .eq_ignore_ascii_case(b.trim_end_matches('\\'))
+}
+
+/// Is `dir` one of the `;`-separated entries of a PATH value?
+pub fn path_contains(path: &str, dir: &str) -> bool {
+    path.split(';').any(|p| same_dir(p, dir))
+}
+
+/// PATH with `dir` appended, or `None` if it's already there.
+pub fn path_with(path: &str, dir: &str) -> Option<String> {
+    if path_contains(path, dir) {
+        return None;
+    }
+    let base = path.trim_end_matches(';');
+    Some(if base.is_empty() {
+        dir.to_string()
+    } else {
+        format!("{base};{dir}")
+    })
+}
+
+/// PATH without `dir`, or `None` if it wasn't there.
+pub fn path_without(path: &str, dir: &str) -> Option<String> {
+    if !path_contains(path, dir) {
+        return None;
+    }
+    Some(
+        path.split(';')
+            .filter(|p| !p.is_empty() && !same_dir(p, dir))
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
+}
+
 #[cfg(windows)]
 pub use imp::*;
 
@@ -42,51 +85,93 @@ mod imp {
     use std::fs;
     use std::io::Write as _;
     use std::os::windows::process::CommandExt as _;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
     use anyhow::{Context as _, Result, bail, ensure};
-    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
-    use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW,
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
     };
-    use windows::core::{HSTRING, PCWSTR};
+    use windows::core::w;
 
-    use super::{SHIM_MARKER, parse_distro_list, render_shim};
+    use super::{
+        CLI_EXE, GUI_EXE, SHIM_MARKER, parse_distro_list, path_with, path_without,
+        protocol_command, render_shim,
+    };
+    use crate::registry::{self, Kind};
     use crate::spec::Context;
     use crate::store::{ShimTarget, Store, timestamp};
     use crate::toast::{self, AUMID};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const PROTOCOL_KEY: &str = r"Software\Classes\toastback";
+    pub const PROTOCOL_KEY: &str = r"Software\Classes\toastback";
+    pub const PROTOCOL_COMMAND_KEY: &str = r"Software\Classes\toastback\shell\open\command";
+    pub const ENV_KEY: &str = "Environment";
 
-    fn aumid_key() -> String {
+    pub fn aumid_key() -> String {
         format!(r"Software\Classes\AppUserModelId\{AUMID}")
     }
 
-    /// `--wsl`: a distro name, `all`, `none`, or `None` for "the calling distro, else all".
-    pub fn install(store: &Store, wsl: Option<&str>, ctx: &Context, version: &str) -> Result<()> {
+    pub struct Options<'a> {
+        /// A distro name, `all`, `none`, or `None` for "the calling distro, else all".
+        pub wsl: Option<&'a str>,
+        pub add_to_path: bool,
+    }
+
+    pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
+        // both exes ship side by side; install from whichever one is running
+        let me = std::env::current_exe()?;
+        let src_dir = me.parent().context("exe has no directory")?;
+        let gui = src_dir.join(GUI_EXE);
+        ensure!(
+            gui.exists(),
+            "{GUI_EXE} must be next to {} to install",
+            me.display()
+        );
+        fs::create_dir_all(store.bin_dir())?;
+        remove_stale_copies(&store.bin_dir());
         let exe = store.installed_exe();
-        copy_self(store, &exe)?;
+        copy_exe(&gui, &exe)?;
+        let cli = src_dir.join(CLI_EXE);
+        if cli.exists() {
+            copy_exe(&cli, &store.bin_dir().join(CLI_EXE))?;
+        }
+        println!(
+            "installed {} (written fresh, so no \"downloaded from the internet\" marker carries over)",
+            store.bin_dir().display()
+        );
         let icon = store.bin_dir().join("icon.png");
         fs::write(&icon, include_bytes!("../res/icon.png"))?;
 
-        set_value(&aumid_key(), "DisplayName", "toastback")?;
-        set_value(&aumid_key(), "IconUri", &icon.to_string_lossy())?;
-        set_value(PROTOCOL_KEY, "", "URL:toastback")?;
-        set_value(PROTOCOL_KEY, "URL Protocol", "")?;
-        set_value(
-            &format!(r"{PROTOCOL_KEY}\shell\open\command"),
+        let aumid = aumid_key();
+        registry::set_string(&aumid, "DisplayName", "toastback", Kind::Plain)?;
+        registry::set_string(&aumid, "IconUri", &icon.to_string_lossy(), Kind::Plain)?;
+        registry::set_string(PROTOCOL_KEY, "", "URL:toastback", Kind::Plain)?;
+        registry::set_string(PROTOCOL_KEY, "URL Protocol", "", Kind::Plain)?;
+        registry::set_string(
+            PROTOCOL_COMMAND_KEY,
             "",
-            &format!("\"{}\" activate \"%1\"", exe.display()),
+            &protocol_command(&exe.to_string_lossy()),
+            Kind::Plain,
         )?;
         println!("registered the toastback:// handler and the notification app id");
 
         let mut record = store.install_record()?.unwrap_or_default();
-        let targets = shim_targets(wsl, ctx)?;
+        if opts.add_to_path {
+            if add_to_path(&store.bin_dir().to_string_lossy())? {
+                println!(
+                    "added {} to your user PATH (new terminals see it)",
+                    store.bin_dir().display()
+                );
+            } else {
+                println!("{} is already on your user PATH", store.bin_dir().display());
+            }
+            record.path_added = true;
+        }
+
         let shim = render_shim(version, &exe.to_string_lossy());
-        for t in &targets {
+        for t in &shim_targets(opts.wsl, ctx)? {
             match write_shim(t, &shim) {
                 Ok(()) => {
                     if !record.shims.contains(t) {
@@ -103,38 +188,68 @@ mod imp {
         Ok(())
     }
 
-    /// Copy the running exe into `bin\`. Written as fresh bytes, so the download marker
-    /// (Zone.Identifier) of a browser download doesn't come along.
-    fn copy_self(store: &Store, dest: &Path) -> Result<()> {
-        let bin = store.bin_dir();
-        fs::create_dir_all(&bin)?;
-        // leftovers from replacing a locked exe
-        for entry in fs::read_dir(&bin)?.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("toastback.exe.old")
-            {
+    /// `*.old-<pid>` files left over from replacing an exe that was running.
+    fn remove_stale_copies(bin: &Path) {
+        for entry in fs::read_dir(bin).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().contains(".exe.old") {
                 let _ = fs::remove_file(entry.path());
             }
         }
-        let me = std::env::current_exe()?;
-        if dest.exists() && fs::canonicalize(&me)? == fs::canonicalize(dest)? {
-            println!("running the installed copy: {}", dest.display());
-            return Ok(());
+    }
+
+    /// Copy an exe as fresh bytes, so the download marker (Zone.Identifier) doesn't come along.
+    fn copy_exe(src: &Path, dest: &Path) -> Result<()> {
+        if dest.exists() && fs::canonicalize(src)? == fs::canonicalize(dest)? {
+            return Ok(()); // installing from the installed copy
         }
-        let bytes = fs::read(&me).with_context(|| format!("read {}", me.display()))?;
+        let bytes = fs::read(src).with_context(|| format!("read {}", src.display()))?;
         if dest.exists() && fs::remove_file(dest).is_err() {
             // in use (a callback is running): a running exe can be renamed, not deleted
             let old = dest.with_extension(format!("exe.old-{}", std::process::id()));
-            fs::rename(dest, &old).context("move the running exe aside")?;
+            fs::rename(dest, &old)
+                .with_context(|| format!("move the running {} aside", dest.display()))?;
         }
-        fs::write(dest, bytes).with_context(|| format!("write {}", dest.display()))?;
-        println!(
-            "installed {} (written fresh, so no \"downloaded from the internet\" marker carries over)",
-            dest.display()
-        );
-        Ok(())
+        fs::write(dest, bytes).with_context(|| format!("write {}", dest.display()))
+    }
+
+    /// Append `dir` to the user PATH. Returns false if it was there already.
+    fn add_to_path(dir: &str) -> Result<bool> {
+        let (path, kind) =
+            registry::get_string(ENV_KEY, "Path")?.unwrap_or((String::new(), Kind::Expand));
+        let Some(new) = path_with(&path, dir) else {
+            return Ok(false);
+        };
+        registry::set_string(ENV_KEY, "Path", &new, kind)?;
+        broadcast_environment_change();
+        Ok(true)
+    }
+
+    fn remove_from_path(dir: &str) -> Result<bool> {
+        let Some((path, kind)) = registry::get_string(ENV_KEY, "Path")? else {
+            return Ok(false);
+        };
+        let Some(new) = path_without(&path, dir) else {
+            return Ok(false);
+        };
+        registry::set_string(ENV_KEY, "Path", &new, kind)?;
+        broadcast_environment_change();
+        Ok(true)
+    }
+
+    /// Tell Explorer (and new terminals it starts) that the user environment changed.
+    fn broadcast_environment_change() {
+        // SAFETY: the lParam string is a static NUL-terminated wide string.
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                WPARAM(0),
+                LPARAM(w!("Environment").as_ptr() as isize),
+                SMTO_ABORTIFHUNG,
+                5000,
+                None,
+            );
+        }
     }
 
     fn shim_targets(wsl: Option<&str>, ctx: &Context) -> Result<Vec<ShimTarget>> {
@@ -165,7 +280,7 @@ mod imp {
         })
     }
 
-    fn list_distros() -> Result<Vec<String>> {
+    pub fn list_distros() -> Result<Vec<String>> {
         let out = Command::new("wsl.exe")
             .args(["-l", "-q"])
             .env("WSL_UTF8", "1")
@@ -178,7 +293,7 @@ mod imp {
     }
 
     /// Run `sh -c script` in a distro, optionally feeding `stdin`. Returns stdout.
-    fn wsl_sh(t: &ShimTarget, script: &str, stdin: Option<&str>) -> Result<String> {
+    pub fn wsl_sh(t: &ShimTarget, script: &str, stdin: Option<&str>) -> Result<String> {
         let mut c = Command::new("wsl.exe");
         c.args(["-d", &t.distro]);
         if let Some(u) = &t.user {
@@ -209,6 +324,16 @@ mod imp {
             );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// The shim currently installed in a distro, if any.
+    pub fn read_shim(t: &ShimTarget) -> Result<Option<String>> {
+        let out = wsl_sh(
+            t,
+            r#"f="$HOME/.local/bin/toastback"; if [ -f "$f" ]; then printf y; cat "$f"; fi"#,
+            None,
+        )?;
+        Ok(out.strip_prefix('y').map(str::to_string))
     }
 
     fn write_shim(t: &ShimTarget, shim: &str) -> Result<()> {
@@ -248,11 +373,16 @@ mod imp {
                 Err(e) => eprintln!("warning: shim in {}: {e:#}", t.distro),
             }
         }
+        if record.as_ref().is_some_and(|r| r.path_added)
+            && remove_from_path(&store.bin_dir().to_string_lossy())?
+        {
+            println!("removed {} from your user PATH", store.bin_dir().display());
+        }
         if let Err(e) = toast::remove_all() {
             eprintln!("warning: clearing toasts: {e:#}");
         }
-        delete_tree(&aumid_key())?;
-        delete_tree(PROTOCOL_KEY)?;
+        registry::delete_tree(&aumid_key())?;
+        registry::delete_tree(PROTOCOL_KEY)?;
         println!("removed the registry keys");
         store.remove_install_record()?;
 
@@ -261,6 +391,12 @@ mod imp {
         } else {
             store.bin_dir()
         };
+        delete_dir(&target)
+    }
+
+    /// Delete one of our state dirs; if the running exe lives in it, a detached cmd.exe does it
+    /// once we've exited.
+    fn delete_dir(target: &PathBuf) -> Result<()> {
         ensure!(
             target.components().any(|c| c.as_os_str() == "toastback"),
             "refusing to delete {}",
@@ -270,8 +406,7 @@ mod imp {
             return Ok(());
         }
         let me = fs::canonicalize(std::env::current_exe()?)?;
-        if me.starts_with(fs::canonicalize(&target)?) {
-            // can't delete the running exe: let a detached cmd.exe do it once we've exited
+        if me.starts_with(fs::canonicalize(target)?) {
             Command::new("cmd.exe")
                 .raw_arg(format!(
                     "/d /c ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"",
@@ -285,77 +420,22 @@ mod imp {
                 .context("schedule deleting the install dir")?;
             println!("{} will be deleted in a moment", target.display());
         } else {
-            fs::remove_dir_all(&target).with_context(|| format!("delete {}", target.display()))?;
+            fs::remove_dir_all(target).with_context(|| format!("delete {}", target.display()))?;
             println!("deleted {}", target.display());
         }
         Ok(())
     }
 
     pub fn is_installed(store: &Store) -> Result<bool> {
-        Ok(store.install_record()?.is_some() && key_exists(&aumid_key()))
+        Ok(store.install_record()?.is_some() && registry::key_exists(&aumid_key()))
     }
 
-    fn key_exists(subkey: &str) -> bool {
-        let mut key = HKEY::default();
-        // SAFETY: valid predefined root, NUL-terminated string, out-pointer to a local HKEY.
-        let err = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                &HSTRING::from(subkey),
-                None,
-                KEY_READ,
-                &mut key,
-            )
-        };
-        if err.is_ok() {
-            // SAFETY: key was just opened.
-            unsafe {
-                let _ = RegCloseKey(key);
-            }
-        }
-        err.is_ok()
-    }
-
-    fn set_value(subkey: &str, name: &str, value: &str) -> Result<()> {
-        let mut key = HKEY::default();
-        // SAFETY: valid predefined root, NUL-terminated strings, out-pointer to a local HKEY.
-        unsafe {
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                &HSTRING::from(subkey),
-                None,
-                PCWSTR::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_WRITE,
-                None,
-                &mut key,
-                None,
-            )
-            .ok()
-            .with_context(|| format!(r"create HKCU\{subkey}"))?;
-        }
-        let data: Vec<u8> = value
-            .encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        // SAFETY: key was opened above; data is a NUL-terminated UTF-16 buffer.
-        let res = unsafe { RegSetValueExW(key, &HSTRING::from(name), None, REG_SZ, Some(&data)) };
-        // SAFETY: key is a valid open handle.
-        unsafe {
-            let _ = RegCloseKey(key);
-        }
-        res.ok().with_context(|| format!(r"set HKCU\{subkey}"))
-    }
-
-    fn delete_tree(subkey: &str) -> Result<()> {
-        // SAFETY: valid predefined root and a NUL-terminated string.
-        let err = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(subkey)) };
-        if err.is_ok() || err == ERROR_FILE_NOT_FOUND {
-            Ok(())
-        } else {
-            err.ok().with_context(|| format!(r"delete HKCU\{subkey}"))
-        }
+    /// The GUI exe to start detached processes with: the sibling `toastback.exe` when running as
+    /// `toastback-cli.exe`, so no console process lingers.
+    pub fn gui_exe() -> Result<PathBuf> {
+        let me = std::env::current_exe()?;
+        let sibling = me.with_file_name(GUI_EXE);
+        Ok(if sibling.exists() { sibling } else { me })
     }
 }
 
@@ -393,5 +473,25 @@ mod tests {
             ["FedoraLinux-44", "Ubuntu"]
         );
         assert!(parse_distro_list(b"").is_empty());
+    }
+
+    #[test]
+    fn user_path_editing() {
+        let bin = r"C:\Users\g\AppData\Local\toastback\bin";
+        assert_eq!(path_with("", bin).unwrap(), bin);
+        assert_eq!(
+            path_with(r"%USERPROFILE%\bin;", bin).unwrap(),
+            format!(r"%USERPROFILE%\bin;{bin}")
+        );
+        // already there, in another case or with a trailing backslash
+        assert_eq!(
+            path_with(r"C:\x;c:\users\g\appdata\local\toastback\bin\", bin),
+            None
+        );
+        assert_eq!(
+            path_without(&format!(r"C:\x;{bin};D:\y"), bin).unwrap(),
+            r"C:\x;D:\y"
+        );
+        assert_eq!(path_without(r"C:\x", bin), None);
     }
 }

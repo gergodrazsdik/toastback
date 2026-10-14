@@ -1,0 +1,15 @@
+{
+  "title": "Windows-side callbacks",
+  "body": "Each button runs on Windows instead of in WSL.",
+  "notify_on_success": true,
+  "buttons": [
+    { "id": "cmd", "label": "cmd",
+      "run": { "cmd": "echo clicked %TOASTBACK_ACTION% & ver" } },
+    { "id": "pwsh", "label": "PowerShell",
+      "run": { "pwsh": "\"${env:TOASTBACK_TITLE}: PowerShell $($PSVersionTable.PSVersion)\"" } },
+    { "id": "exe", "label": "Notepad",
+      "run": { "exe": ["notepad.exe"] } },
+    { "id": "folder", "label": "Open folder",
+      "run": { "open": "%LOCALAPPDATA%\\toastback" } }
+  ]
+}

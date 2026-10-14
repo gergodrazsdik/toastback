@@ -31,6 +31,7 @@ pub struct Spec {
     pub default: Option<Run>,
     pub data: Option<serde_json::Value>,
     pub notify_on_error: Option<bool>,
+    pub notify_on_success: Option<bool>,
     pub context: Context,
 }
 
@@ -260,9 +261,14 @@ impl Spec {
         parse_duration(self.expires.as_deref().unwrap_or(DEFAULT_EXPIRES))
     }
 
-    #[allow(dead_code)] // error toasts arrive in M3
+    /// Show an error toast when a callback fails (default: on).
     pub fn notify_on_error(&self) -> bool {
         self.notify_on_error.unwrap_or(true)
+    }
+
+    /// Show a small "done" toast when a callback succeeds (default: off).
+    pub fn notify_on_success(&self) -> bool {
+        self.notify_on_success.unwrap_or(false)
     }
 
     pub fn button(&self, id: &str) -> Option<&Button> {
@@ -307,8 +313,8 @@ impl Spec {
         if self.scenario != Scenario::Default {
             ensure!(
                 !self.buttons.is_empty(),
-                "scenario {:?} needs at least one button",
-                self.scenario
+                "scenario {} needs at least one button",
+                serde_json::to_value(self.scenario).unwrap_or_default()
             );
         }
         if self.on_click == Some(OnClick::Details) {
@@ -432,6 +438,7 @@ mod tests {
         assert_eq!(s.expires().unwrap(), Duration::from_secs(7 * 86400));
         assert_eq!(s.body_click(), OnClick::None);
         assert!(s.notify_on_error());
+        assert!(!s.notify_on_success());
     }
 
     #[test]
