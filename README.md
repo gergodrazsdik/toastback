@@ -94,6 +94,20 @@ $id = toastback-cli -t "Build done" -m "Release build finished in 4 min"
 toastback-cli C:\specs\deploy.json; if ($LASTEXITCODE) { throw "toastback failed" }
 ```
 
+### From systemd services, timers and cron (in WSL)
+
+These work as is: call `~/.local/bin/toastback` by its full path (services don't get your shell's PATH). WSL sets
+`WSL_DISTRO_NAME` only for processes it starts itself, so the shim takes the distro name from `wslpath -w /`
+instead. Callbacks still run in the right distro, as the service's user, from the service's working directory.
+
+```ini
+# ~/.config/systemd/user/updates-check.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'n=$(dnf -q check-update | grep -c .); [ "$n" -eq 0 ] || \
+  %h/.local/bin/toastback -t "Updates available" -m "$n packages can be upgraded"'
+```
+
 ### From Task Scheduler
 
 Toasts need a user session: set the task to **Run only when user is logged on** (not "whether user is logged

@@ -63,6 +63,10 @@ covered by the smoke job, so here they only need to be checked once.
 25. Task Scheduler: a task "Run only when user is logged on" with action
     `%LOCALAPPDATA%\toastback\bin\toastback.exe -t "scheduled"` shows the toast and no console window.
 
+29. From a systemd user service without the distro variable:
+    `systemd-run --user --wait --pipe -p UnsetEnvironment=WSL_DISTRO_NAME ~/.local/bin/toastback -t from-systemd`
+    shows the toast, and `toastback log` / the pending context names the right distro.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

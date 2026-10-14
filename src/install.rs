@@ -168,6 +168,10 @@ mod imp {
         println!("registered the toastback:// handler and the notification app id");
 
         let mut record = store.install_record()?.unwrap_or_default();
+        // forget shims in distros that were removed since (`wsl --unregister`)
+        if let Ok(existing) = list_distros() {
+            record.shims.retain(|t| existing.contains(&t.distro));
+        }
         if opts.add_to_path {
             if add_to_path(&store.bin_dir().to_string_lossy())? {
                 println!(
@@ -376,7 +380,15 @@ mod imp {
         let script = format!(
             r#"f="$HOME/.local/bin/toastback"; if head -n 2 "$f" 2>/dev/null | grep -q '{SHIM_MARKER}'; then rm -f "$f" && echo removed; fi"#
         );
+        let existing = list_distros().ok();
         for t in record.iter().flat_map(|r| &r.shims) {
+            if existing.as_ref().is_some_and(|e| !e.contains(&t.distro)) {
+                println!(
+                    "skipped the shim in {}: the distro no longer exists",
+                    t.distro
+                );
+                continue;
+            }
             match wsl_sh(t, &script, None) {
                 Ok(out) if out.contains("removed") => println!("removed the shim in {}", t.distro),
                 Ok(_) => println!("no toastback shim in {}", t.distro),
@@ -568,6 +580,9 @@ mod tests {
         assert!(s.starts_with("#!/usr/bin/env bash\n"));
         assert!(s.lines().nth(1).unwrap().starts_with(SHIM_MARKER));
         assert!(s.contains("toastback 0.1.0)"));
+        // systemd services and the like have no WSL_DISTRO_NAME: the shim falls back to wslpath
+        assert!(s.contains(r#"distro="${WSL_DISTRO_NAME:-}""#));
+        assert!(s.contains("wslpath -w /"));
         assert!(s.contains(
             r"TOASTBACK_WIN_EXE='C:\Users\o'\''neil\AppData\Local\toastback\bin\toastback.exe'"
         ));
