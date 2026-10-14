@@ -31,7 +31,8 @@ covered by the smoke job, so here they only need to be checked once.
 13. `toastback examples/wsl-options.json`, then click each button: the log shows the `/tmp` listing, and
     `hello from /etc`.
 14. `toastback examples/windows-callbacks.json`, then click each button. **cmd** and **PowerShell** show
-    "done" toasts. **Notepad** opens Notepad (its "done" toast appears when Notepad closes). **Open folder**
+    "done" toasts. **Notepad** opens Notepad. On Windows 11 its "done" toast appears at once, because `notepad.exe` only
+    starts the Store app and exits. On Windows 10 it appears when Notepad closes. **Open folder**
     opens `%LOCALAPPDATA%\toastback` in Explorer.
 15. `toastback examples/alarm.json`: the toast stays on screen with a looping sound until a button is chosen.
 16. Text: `toastback -t "őű 🔔" -m "Ünïcödé ✓"` displays correctly.
