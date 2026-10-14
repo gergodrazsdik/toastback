@@ -108,11 +108,12 @@ release version:
     test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree not clean"; exit 1; }
     git switch main
     git pull --ff-only
-    grep -qxF "version = \"$v\"" Cargo.toml || { echo "main isn't at $v: merge the 'just bump' PR first"; exit 1; }
+    # the [package] version at a commit
+    pkg_version() { git show "$1:Cargo.toml" | sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p'; }
+    [ "$(pkg_version HEAD)" = "$v" ] || { echo "main isn't at $v: merge the 'just bump' PR first"; exit 1; }
     grep -qF "## [$v] - " CHANGELOG.md || { echo "CHANGELOG.md has no [$v] section"; exit 1; }
     # The commit that set the version, not main's head: PRs merged after it wait for the next release.
     # Walk back through the commits that changed Cargo.toml while its package version is still $v.
-    pkg_version() { git show "$1:Cargo.toml" | sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p'; }
     commit=
     while read -r c; do
         [ "$(pkg_version "$c")" = "$v" ] || break
@@ -120,8 +121,11 @@ release version:
     done < <(git log --format=%H -- Cargo.toml)
     [ -n "$commit" ] || { echo "no commit sets version $v in Cargo.toml"; exit 1; }
     if [ "$commit" != "$(git rev-parse HEAD)" ]; then
-        echo "tagging $(git log -1 --format='%h %s' "$commit");"
+        # the confirmation above was for main's head: ask again for the commit that gets the tag
+        echo "the commit that set $v: $(git log -1 --format='%h %s' "$commit")"
         echo "the $(git rev-list --count "$commit..HEAD") commit(s) merged after it go into the next release"
+        read -rp "Tag that commit as v$v and push the tag? [y/N] " answer
+        [[ $answer == [yY]* ]] || { echo "not tagged"; exit 1; }
     fi
     git tag -a "v$v" -m "v$v" "$commit"
     git push origin "v$v"

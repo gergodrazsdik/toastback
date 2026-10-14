@@ -11,8 +11,8 @@ pub const MAX_BUTTONS: usize = 5;
 /// Action id for a click on the toast body.
 pub const BODY_ACTION: &str = "__body";
 /// Default `expires`: toasts can't outlive 3 days anyway, dialogs keep a week.
-pub const DEFAULT_EXPIRES_TOAST: &str = "3d";
-pub const DEFAULT_EXPIRES_DIALOG: &str = "7d";
+pub const DEFAULT_EXPIRES_TOAST: Duration = MAX_TOAST_LIFETIME;
+pub const DEFAULT_EXPIRES_DIALOG: Duration = Duration::from_secs(7 * 86400);
 /// Windows keeps a toast in the notification center for at most 3 days: after that nothing can be
 /// clicked, so a toast's pending record doesn't need to outlive it. Dialogs have no such limit.
 pub const MAX_TOAST_LIFETIME: Duration = Duration::from_secs(3 * 86400);
@@ -109,12 +109,10 @@ impl Context {
     /// Fill the fields the spec left empty. A context written in the spec wins over the shim's.
     /// The caller's user and directory belong to the caller's distro: a spec that names another
     /// distro doesn't get them (it runs as that distro's default user, in its home directory).
+    /// A caller whose distro isn't known keeps them.
     pub fn fill_from(&mut self, other: &Context) {
-        let other_distro = match (&self.distro, &other.distro) {
-            (Some(mine), Some(theirs)) => !crate::context::same_distro(mine, theirs),
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
+        let other_distro =
+            crate::context::is_other_distro(self.distro.as_deref(), other.distro.as_deref());
         if self.distro.is_none() {
             self.distro.clone_from(&other.distro);
         }
@@ -267,7 +265,7 @@ impl Spec {
             Mode::Toast => DEFAULT_EXPIRES_TOAST,
             Mode::Dialog => DEFAULT_EXPIRES_DIALOG,
         };
-        parse_duration(self.expires.as_deref().unwrap_or(default))
+        self.expires.as_deref().map_or(Ok(default), parse_duration)
     }
 
     /// How long the notification stays clickable: `expires`, capped at 3 days for toasts.
@@ -375,6 +373,13 @@ pub fn is_token(s: &str, max: usize) -> bool {
         && s.len() <= max
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+/// An id that can name a pending file, a cached image and a toast tag: what [`Spec::validate`]
+/// allows, without the leading-`-` rule. That one only keeps new ids apart from options on the
+/// command line; 1.0.0 had no such rule, so its notifications may still carry one.
+pub fn is_safe_id(id: &str) -> bool {
+    is_token(id, 64) && !is_device_name(id)
 }
 
 /// A name Windows maps to a device whatever the extension (`NUL.json` is NUL).
@@ -592,6 +597,19 @@ mod tests {
         });
         assert_eq!(other.distro.as_deref(), Some("Debian"));
         assert_eq!((other.user, other.cwd), (None, None));
+
+        // a caller that passed its user and directory but no distro keeps them
+        let mut named = Context {
+            distro: Some("Ubuntu".into()),
+            ..Default::default()
+        };
+        named.fill_from(&Context {
+            distro: None,
+            user: Some("g".into()),
+            cwd: Some("/home/g/proj".into()),
+        });
+        assert_eq!(named.user.as_deref(), Some("g"));
+        assert_eq!(named.cwd.as_deref(), Some("/home/g/proj"));
     }
 
     #[test]

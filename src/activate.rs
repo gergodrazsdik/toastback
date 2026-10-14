@@ -181,16 +181,16 @@ mod imp {
         // a log write that fails must not cost the click
         let _ = store.log("activated", json!({ "id": act.id, "action": act.action }));
 
-        let action = if act.action == BODY_ACTION {
+        let (action, from_dialog) = if act.action == BODY_ACTION {
             match pending.spec.body_click() {
-                OnClick::Default => Some(BODY_ACTION.to_string()),
-                OnClick::Details => ask(store, &pending)?,
-                OnClick::None => None,
+                OnClick::Default => (Some(BODY_ACTION.to_string()), false),
+                OnClick::Details => (ask(store, &pending)?, true),
+                OnClick::None => (None, false),
             }
         } else {
-            Some(act.action)
+            (Some(act.action), false)
         };
-        finish(store, &pending, action.as_deref())
+        finish(store, &pending, action.as_deref(), from_dialog)
     }
 
     /// `__dialog <id>`: the detached process behind `mode: dialog`.
@@ -205,7 +205,7 @@ mod imp {
             return store.log("rejected", json!({ "id": id, "reason": "already handled" }));
         }
         let action = ask(store, &pending)?;
-        finish(store, &pending, action.as_deref())
+        finish(store, &pending, action.as_deref(), true)
     }
 
     /// Show the dialog for a notification; returns the chosen button id.
@@ -225,11 +225,17 @@ mod imp {
     }
 
     /// Claim the click, clear the toast, then run the callback for `action` (if any).
-    fn finish(store: &Store, pending: &Pending, action: Option<&str>) -> Result<()> {
+    /// `from_dialog`: the choice was made in a dialog (which may count past `expires`).
+    fn finish(
+        store: &Store,
+        pending: &Pending,
+        action: Option<&str>,
+        from_dialog: bool,
+    ) -> Result<()> {
         let id = pending.spec.id.clone().unwrap_or_default();
         // A dialog can stay open for long, and another click may be running already: only the
         // first claim for this token runs anything. Claiming marks it done before the callback.
-        let reason = match store.claim(&id, &pending.token, unix_now())? {
+        let reason = match store.claim(&id, &pending.token, unix_now(), from_dialog)? {
             Claim::Claimed => None,
             Claim::Gone => Some("removed or expired"),
             Claim::Expired => Some("expired"),

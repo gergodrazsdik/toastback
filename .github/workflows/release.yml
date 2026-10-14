@@ -65,9 +65,10 @@ jobs:
       - name: Release notes from CHANGELOG.md
         run: |
           version=${GITHUB_REF_NAME#v}
-          # the section ends at the next heading, or at the link definitions after the last one
-          awk -v v="$version" 'index($0, "## [" v "]") == 1 { f = 1; next } /^## \[|^\[[^]]+\]: / { f = 0 } f' \
-            CHANGELOG.md > notes.md
+          # the section ends at the next heading, or at the version link definitions after the last
+          # one (not at a reference link inside a section)
+          awk -v v="$version" 'index($0, "## [" v "]") == 1 { f = 1; next }
+            /^## \[|^\[(unreleased|[0-9]+\.[0-9]+\.[0-9]+)\]: / { f = 0 } f' CHANGELOG.md > notes.md
           grep -q . notes.md || { echo "::error::empty [$version] section in CHANGELOG.md"; exit 1; }
           cat notes.md
 

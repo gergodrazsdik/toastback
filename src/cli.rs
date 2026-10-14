@@ -59,6 +59,11 @@ impl Cli {
         attach_dash_values(&mut args);
         Cli::try_parse_from(args)
     }
+
+    /// Is this the `show` command (also when it was the default)?
+    pub fn is_show(&self) -> bool {
+        matches!(self.command, Command::Show(_))
+    }
 }
 
 /// Text for -t, -m and -d often comes from a script's output, which may start with `-` (`-- Build
@@ -66,6 +71,15 @@ impl Cli {
 /// A value that is one of our own flags stays a flag (`-t -m x` is still "-t needs a value").
 fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
     use clap::CommandFactory;
+    const TEXT_FLAGS: [&str; 6] = ["-t", "--title", "-m", "--body", "-d", "--details"];
+    let dash_value = |pair: &[std::ffi::OsString]| {
+        pair[0].to_str().is_some_and(|f| TEXT_FLAGS.contains(&f))
+            && pair[1].to_str().is_some_and(|v| v.starts_with('-'))
+    };
+    // the usual case (a click, a dialog, plain text): no need for the list of our flags
+    if !args.windows(2).any(dash_value) {
+        return;
+    }
     let cmd = Cli::command();
     let mut flags: Vec<String> = vec!["--".into(), "-".into()];
     for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
@@ -257,7 +271,7 @@ pub fn run(cli: Cli) -> Result<u8> {
             };
             match show::show_spec(&store, spec) {
                 Ok(_) => outln!("done: a test notification is on its way"),
-                Err((_, e)) => eprintln!("warning: test notification failed: {e:#}"),
+                Err((_, e)) => errln!("warning: test notification failed: {e:#}"),
             }
             Ok(0)
         }
@@ -303,7 +317,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                     outln!("removed {id}");
                 } else {
                     missing += 1;
-                    eprintln!("toastback: no notification {id}");
+                    errln!("toastback: no notification {id}");
                 }
             }
             Ok(u8::from(missing > 0))
@@ -311,9 +325,8 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Clear => {
             let _ = toast::remove_all();
             let ids = store.pending_ids()?;
-            for id in &ids {
-                store.remove_pending(id)?;
-            }
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            store.remove_pendings(&ids)?;
             store.log("cleared", serde_json::json!({ "ids": ids }))?;
             outln!("removed {} notification(s)", ids.len());
             Ok(0)

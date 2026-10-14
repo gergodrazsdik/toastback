@@ -180,8 +180,9 @@ Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override th
 (the callback, and everything it started, is killed after it; processes detached on purpose with `nohup` or
 `setsid` in WSL survive). Windows-side callbacks run in your profile folder unless `cwd` is set. A relative `cwd` is
 resolved against the directory you ran `toastback` in (from cmd or PowerShell: for Windows-side callbacks only),
-and `~` means your home directory in `wsl` callbacks only. `cmd` can't run in
-a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths), so `toastback` rejects that spec; use `pwsh`.
+and `~` means your home directory in `wsl` callbacks only. `cmd` (and an `exe` that is a `.bat` or `.cmd` script)
+can't run in a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths), so `toastback` rejects that spec;
+use `pwsh`.
 A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
 otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
 names of its `env` variables, not their values.

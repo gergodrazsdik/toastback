@@ -24,14 +24,14 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
     let spec = match load_spec(args, ctx) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("toastback: {e:#}");
+            errln!("toastback: {e:#}");
             return EXIT_INVALID;
         }
     };
     match install::is_installed(store) {
         Ok(true) => {}
         _ => {
-            eprintln!("toastback: not installed; run `toastback.exe install` first");
+            errln!("toastback: not installed; run `toastback.exe install` first");
             return EXIT_NOT_INSTALLED;
         }
     }
@@ -41,7 +41,7 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
             0
         }
         Err((code, e)) => {
-            eprintln!("toastback: {e:#}");
+            errln!("toastback: {e:#}");
             code
         }
     }
@@ -83,32 +83,45 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
 fn resolve_windows_cwds(spec: &mut Spec, dir: &str) {
     let runs = spec.buttons.iter_mut().filter_map(|b| b.run.as_mut());
     for run in runs.chain(spec.default.as_mut()) {
-        let windows_side = run.kind().is_ok_and(|k| {
-            !matches!(
-                k,
-                crate::spec::RunKind::WslShell(_) | crate::spec::RunKind::WslArgv(_)
-            )
-        });
-        if let Some(c) = run.cwd.as_mut()
-            && windows_side
-            && !context::is_windows_path(c)
-            && !c.starts_with(['/', '~'])
-        {
-            *c = format!(r"{}\{}", dir.trim_end_matches('\\'), c.replace('/', "\\"));
+        let windows_side = run.wsl.is_none(); // validated: exactly one kind
+        let Some(c) = run
+            .cwd
+            .as_mut()
+            .filter(|c| windows_side && !context::is_absolute(c))
+        else {
+            continue;
+        };
+        let resolved = if c.starts_with('\\') {
+            // `\logs`: the root of the current drive
+            dir.get(..2)
+                .filter(|d| d.ends_with(':'))
+                .map(|drive| format!("{drive}{c}"))
+        } else if c.as_bytes().get(1) == Some(&b':') {
+            // `D:sub`: relative to D:'s own current directory, which isn't known here; left for
+            // the show-time check to report
+            None
+        } else {
+            Some(format!(
+                r"{}\{}",
+                dir.trim_end_matches('\\'),
+                c.replace('/', "\\")
+            ))
+        };
+        if let Some(r) = resolved {
+            *c = r;
         }
     }
 }
 
 /// What would otherwise only fail at click time: a relative cwd without a caller directory, ...
 fn check_runs(spec: &Spec) -> Result<()> {
-    let buttons = spec.buttons.iter().filter_map(|b| {
-        b.run
-            .as_ref()
-            .map(|r| (format!("button {:?}: run", b.id), r))
-    });
-    let default = spec.default.as_ref().map(|r| ("default".to_string(), r));
-    for (what, run) in buttons.chain(default) {
-        exec::check(run, &spec.context).context(what)?;
+    for b in &spec.buttons {
+        if let Some(r) = &b.run {
+            exec::check(r, &spec.context).with_context(|| format!("button {:?}: run", b.id))?;
+        }
+    }
+    if let Some(r) = &spec.default {
+        exec::check(r, &spec.context).context("default")?;
     }
     Ok(())
 }
@@ -163,8 +176,8 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
             })
             .transpose()
     };
-    let icon_path = cache("icon", &spec.icon).map_err(invalid)?;
-    let image_path = cache("image", &spec.image).map_err(invalid)?;
+    let icon_path = cache(store::ICON, &spec.icon).map_err(invalid)?;
+    let image_path = cache(store::IMAGE, &spec.image).map_err(invalid)?;
 
     let now = unix_now();
     let pending = Pending {
@@ -270,21 +283,21 @@ mod tests {
         let mut spec = Spec::parse(
             r#"{"title": "t", "default": {"pwsh": "x", "cwd": "sub/dir"},
                 "buttons": [{"id": "w", "label": "W", "run": {"wsl": "x", "cwd": "sub"}},
-                            {"id": "a", "label": "A", "run": {"cmd": "x", "cwd": "D:\\abs"}}]}"#,
+                            {"id": "a", "label": "A", "run": {"cmd": "x", "cwd": "D:\\abs"}},
+                            {"id": "r", "label": "R", "run": {"pwsh": "x", "cwd": "\\logs"}},
+                            {"id": "d", "label": "D", "run": {"pwsh": "x", "cwd": "D:sub"}}]}"#,
         )
         .unwrap();
         resolve_windows_cwds(&mut spec, r"C:\work\");
+        let cwd = |i: usize| spec.buttons[i].run.as_ref().unwrap().cwd.clone();
+        assert_eq!(cwd(0).as_deref(), Some("sub"));
+        assert_eq!(cwd(1).as_deref(), Some(r"D:\abs"));
+        // rooted: the current drive's root; drive-relative: left alone (the check reports it)
+        assert_eq!(cwd(2).as_deref(), Some(r"C:\logs"));
+        assert_eq!(cwd(3).as_deref(), Some("D:sub"));
         assert_eq!(
             spec.default.unwrap().cwd.as_deref(),
             Some(r"C:\work\sub\dir")
-        );
-        assert_eq!(
-            spec.buttons[0].run.as_ref().unwrap().cwd.as_deref(),
-            Some("sub")
-        );
-        assert_eq!(
-            spec.buttons[1].run.as_ref().unwrap().cwd.as_deref(),
-            Some(r"D:\abs")
         );
     }
 

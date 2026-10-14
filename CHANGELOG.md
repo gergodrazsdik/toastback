@@ -18,13 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep 7 days); a longer `expires` keeps a toast's buttons for 3 days and still applies to dialogs. `expires` is
   limited to 365 days.
 - A `distro` other than the caller's (in a run or in the spec's `context`) runs as that distro's default user in
-  its home directory (it used to take the caller's user and directory), unless `user`/`cwd` are set.
+  its home directory (it used to take the caller's user and directory), unless `user`/`cwd` are set. A caller
+  whose distro isn't known keeps its user and directory.
 - `install` without a working `wsl.exe` (from Windows, default `--wsl`) installs anyway and warns that no shim was
   written; `--wsl all` fails before changing anything.
 - `install --wsl all` gives the calling distro's shim to the calling user, like the default does.
 - `open` expands `%VAR%`s in paths only, no longer in URLs (`?q=%OS%` stays as it is). The README said it
   expanded `%VAR%`s in general; `TOASTBACK_*` were never expanded, and stay so.
-- Notification ids can't start with `-` or be a Windows device name (`CON`, `NUL`, `COM1`, …).
+- Notification ids can't start with `-` or be a Windows device name (`CON`, `NUL`, `COM1`, …). Notifications
+  that 1.0.0 showed with a leading `-` still work.
 
 ### Fixed
 
@@ -41,10 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expires` now counts for up to a day after it.
 - A dialog that a callback opens (`toastback --mode dialog` inside a `pwsh` callback) is no longer closed when the
   callback times out.
-- `cmd` callbacks with a WSL `cwd` ran in `C:\Windows` (cmd.exe refuses UNC directories): such specs are rejected
-  at show time. A relative `cwd` is resolved against the caller's directory for `wsl` callbacks too, and from cmd
-  or PowerShell against the current directory for Windows-side callbacks. Errors that would only show at click
-  time (a relative `cwd` without a caller directory, `~` in a Windows-side `cwd`) now fail `toastback` itself.
+- `cmd` callbacks (and `exe` callbacks that run a `.bat` or `.cmd` script) with a WSL `cwd` ran in `C:\Windows`
+  (cmd.exe refuses UNC directories): such specs are rejected at show time. A relative `cwd` is resolved against the
+  caller's directory for `wsl` callbacks too, and from cmd or PowerShell against the current directory for
+  Windows-side callbacks. Errors that would only show at click time (a relative `cwd` without a caller directory,
+  `~` in a Windows-side `cwd`) now fail `toastback` itself.
 - Spec files written by Windows PowerShell (UTF-8 with BOM, UTF-16) are read.
 - `-t`, `-m` and `-d` accept text that starts with `-` (like cmake's `-- Build files have been written`).
 - A piped spec is read also with `--mode`, `--id`, `-i`, `-d` or `--scenario`; only `-t`/`-m` replace it.
@@ -54,9 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could interleave.
 - Pruning deleted pending notifications whose file it couldn't fully parse, such as ones written by a newer
   version.
-- `toastback log | head`, `toastback install | head` (any closed stdout) aborted with a panic, `install` halfway
-  through. Other output errors (a full disk) now make the exit code 1.
-- wsl.exe's own error messages (UTF-16) are decoded, so they reach the log and the "failed" toast readable.
+- `toastback log | head`, `toastback install 2>&1 | head` (any closed stdout or stderr) aborted with a panic,
+  `install` halfway through. Other output errors (a full disk) now make the exit code 1, except for `show`, whose
+  exit code still only says whether the notification was shown.
+- wsl.exe's own error messages (UTF-16) are decoded, so they reach the log and the "failed" toast readable, also
+  in other languages and next to the callback's own output.
 - `remove` stopped with an error at a pending file written by a newer version.
 - A click or `remove` for an id that Windows reserves as a device name (`NUL`) is ignored rather than touching
   the device.
@@ -70,17 +75,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The shim's "Regenerate" comment suggested a command that empties the shim; it now says `toastback install`.
 - README install steps: the comments after the commands broke them in zsh, the checksum now gates reading the
   script, and the downloads go to a fresh directory.
-- `just release` tags the commit that set the version (not main's head), watches the run for that tag and fails
-  when it fails; `just bump` checks everything before creating the branch, and `scripts/bump.sh` before editing
-  any file, without needing `cargo`.
+- `just release` tags the commit that set the version (not main's head, and it asks again when that's another
+  commit), watches the run for that tag and fails when it fails; `just bump` checks everything before creating the
+  branch, and `scripts/bump.sh` before editing any file, without needing `cargo`.
 - Release workflow: a re-run after a failed publish reuses the draft (and an API error no longer creates a
-  second one); the oldest version's notes no longer end with the changelog's link definitions.
+  second one); the oldest version's notes no longer end with the changelog's link definitions, and a reference
+  link inside a section doesn't cut it short.
 - README: a program a callback leaves running in the background should redirect its output.
 
 ### Security
 
 - Callback environment values (`env`, which may hold tokens) are no longer written to the event log: the
-  `callback_started` event lists the variable names only.
+  `callback_started` event lists the variable names only. Logs written by 1.0.0 still hold them: delete
+  `%LOCALAPPDATA%\toastback\log` to remove them.
 
 ## [1.0.0] - 2026-10-14
 

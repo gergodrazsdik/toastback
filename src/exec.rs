@@ -84,7 +84,7 @@ pub fn plan(
         }
         let win = context::to_windows_path(c, ctx)?;
         if !context::is_windows_path(&win) {
-            bail!("cwd {c:?} is relative, and there's no caller directory to resolve it against");
+            return Err(relative_cwd(c));
         }
         Ok(Some(win))
     };
@@ -101,11 +101,8 @@ pub fn plan(
         RunKind::WslShell(_) | RunKind::WslArgv(_) => {
             // The caller's user and directory belong to the caller's distro: a run in another one
             // gets that distro's default user and the home directory, unless it sets them.
-            let other_distro = run.distro.as_ref().is_some_and(|d| {
-                ctx.distro
-                    .as_ref()
-                    .is_none_or(|c| !context::same_distro(c, d))
-            });
+            let other_distro =
+                context::is_other_distro(run.distro.as_deref(), ctx.distro.as_deref());
             let mut args = Vec::new();
             if let Some(d) = run.distro.as_ref().or(ctx.distro.as_ref()) {
                 args.extend(["-d".into(), d.clone()]);
@@ -137,13 +134,7 @@ pub fn plan(
         }
         RunKind::Cmd(s) => {
             let cwd = windows_cwd()?;
-            if let Some(c) = cwd.as_deref().filter(|c| c.starts_with(r"\\")) {
-                // cmd.exe would print a warning and run the command in C:\Windows instead
-                bail!(
-                    "cmd can't run in {c}: cmd.exe doesn't accept UNC directories (WSL paths outside \
-                     /mnt/<drive>). Use a Windows directory as cwd, or pwsh"
-                );
-            }
+            refuse_unc_for_cmd(cwd.as_deref())?;
             Plan::Process {
                 program: "cmd.exe".into(),
                 fallback: None,
@@ -167,7 +158,14 @@ pub fn plan(
             env,
             cwd: windows_cwd()?,
         },
-        RunKind::Exe(argv) => process(&argv[0], argv[1..].to_vec(), env, windows_cwd()?),
+        RunKind::Exe(argv) => {
+            let cwd = windows_cwd()?;
+            // a .bat or .cmd runs in cmd.exe too (so does cmd.exe itself)
+            if runs_in_cmd(&argv[0]) {
+                refuse_unc_for_cmd(cwd.as_deref())?;
+            }
+            process(&argv[0], argv[1..].to_vec(), env, cwd)
+        }
         RunKind::Open(target) => Plan::Open {
             target: target.into(),
             cwd: windows_cwd()?,
@@ -185,18 +183,40 @@ pub fn check(run: &Run, ctx: &Context) -> Result<()> {
 /// but resolves a relative path against its own (Windows) directory: so a relative `cwd` is
 /// resolved against the caller's directory here.
 fn wsl_cwd(cwd: Option<&str>, base: Option<&str>) -> Result<String> {
-    let absolute =
-        |c: &str| c.starts_with('/') || c.starts_with('~') || context::is_windows_path(c);
-    let base = base.filter(|b| absolute(b));
+    let base = base.filter(|b| context::is_absolute(b));
     Ok(match (cwd, base) {
-        (Some(c), _) if absolute(c) => c.to_string(),
+        (Some(c), _) if context::is_absolute(c) => c.to_string(),
         (Some(c), Some(b)) if b.starts_with('/') => format!("{}/{c}", b.trim_end_matches('/')),
-        (Some(c), _) => {
-            bail!("cwd {c:?} is relative, and there's no caller directory to resolve it against")
-        }
+        (Some(c), _) => return Err(relative_cwd(c)),
         (None, Some(b)) => b.to_string(),
         (None, None) => "~".into(),
     })
+}
+
+fn relative_cwd(c: &str) -> anyhow::Error {
+    anyhow::anyhow!("cwd {c:?} is relative, and there's no caller directory to resolve it against")
+}
+
+/// Does `program` run in cmd.exe: cmd itself, or a batch file (which Windows hands to cmd.exe)?
+fn runs_in_cmd(program: &str) -> bool {
+    let name = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "cmd" | "cmd.exe") || name.ends_with(".bat") || name.ends_with(".cmd")
+}
+
+/// cmd.exe doesn't take a UNC directory: it would print a warning and run the command in
+/// C:\Windows instead.
+fn refuse_unc_for_cmd(cwd: Option<&str>) -> Result<()> {
+    if let Some(c) = cwd.filter(|c| c.starts_with(r"\\")) {
+        bail!(
+            "cmd can't run in {c}: cmd.exe doesn't accept UNC directories (WSL paths outside \
+             /mnt/<drive>). Use a Windows directory as cwd, or pwsh"
+        );
+    }
+    Ok(())
 }
 
 /// `scheme:…` with a scheme of two or more characters (so not `C:\…`): `https://…`, `mailto:…`.
@@ -242,16 +262,46 @@ pub fn tail(bytes: &[u8]) -> String {
 }
 
 /// Process output as text. wsl.exe writes its own messages ("There is no distribution with the
-/// supplied name") in UTF-16LE; setting `WSL_UTF8` instead would leak into every Windows program the
-/// callback starts. Mostly `X\0` pairs means UTF-16LE; anything else is (lossy) UTF-8.
+/// supplied name", a proxy notice before the command's own output) in UTF-16LE; setting
+/// `WSL_UTF8` instead would leak into every Windows program the callback starts. Both can share a
+/// stream, so each line is decoded on its own: a UTF-16LE line has NULs at odd offsets (the high
+/// byte of its spaces, CR, LF and other ASCII-range characters, whatever the language), UTF-8
+/// has no NULs at all. Anything else is (lossy) UTF-8.
 pub fn decode_output(bytes: &[u8]) -> String {
-    let (units, _) = bytes.as_chunks::<2>();
-    let ascii_like = units.iter().filter(|u| u[0] != 0 && u[1] == 0).count();
-    if units.len() >= 2 && ascii_like * 2 > units.len() {
-        String::from_utf16le_lossy(&bytes[..units.len() * 2])
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+    if !bytes.contains(&0) {
+        return String::from_utf8_lossy(bytes).into_owned();
     }
+    let mut text = String::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        // the bytes up to the next LF byte tell the encodings apart
+        let line = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(rest.len(), |i| i + 1);
+        let nul_at = |parity: usize| rest[..line].iter().skip(parity).step_by(2).any(|&b| b == 0);
+        let used = if nul_at(1) {
+            // UTF-16LE up to and including its LF unit
+            let (units, _) = rest.as_chunks::<2>();
+            let n = units
+                .iter()
+                .position(|u| *u == [b'\n', 0])
+                .map_or(units.len(), |i| i + 1);
+            text.push_str(&String::from_utf16le_lossy(&rest[..2 * n]));
+            2 * n
+        } else if nul_at(0) {
+            // UTF-16LE that starts a byte later (a cut, or text without a line end before it)
+            if rest[0] != 0 {
+                text.push_str(&String::from_utf8_lossy(&rest[..1]));
+            }
+            1
+        } else {
+            text.push_str(&String::from_utf8_lossy(&rest[..line]));
+            line
+        };
+        rest = &rest[used..];
+    }
+    text
 }
 
 #[cfg(windows)]
@@ -678,6 +728,53 @@ mod tests {
         assert!(e.contains("UNC"), "{e}");
         assert!(check(&r, &ctx()).is_err());
         check(&run(r#"{"cmd": "dir", "cwd": "/mnt/c/build"}"#), &ctx()).unwrap();
+        // batch files (and cmd itself) run in cmd.exe too; other programs don't mind
+        for exe in [
+            r"C:\\tools\\build.cmd",
+            "clean.BAT",
+            "cmd.exe",
+            r"C:\\Windows\\System32\\cmd",
+        ] {
+            let r = run(&format!(r#"{{"exe": ["{exe}"], "cwd": "/home/g/build"}}"#));
+            assert!(check(&r, &ctx()).is_err(), "{exe}");
+        }
+        check(
+            &run(r#"{"exe": ["C:\\tools\\build.exe"], "cwd": "/home/g/build"}"#),
+            &ctx(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn unknown_caller_distro_keeps_the_callers_user_and_directory() {
+        let caller = Context {
+            distro: None,
+            user: Some("g".into()),
+            cwd: Some("/home/g/app".into()),
+        };
+        let p = plan(
+            &run(r#"{"wsl": ["id"], "distro": "Ubuntu"}"#),
+            &caller,
+            &vars(),
+            None,
+        )
+        .unwrap();
+        let Plan::Process { args, .. } = p else {
+            panic!()
+        };
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "-u",
+                "g",
+                "--cd",
+                "/home/g/app",
+                "--exec",
+                "id"
+            ]
+        );
     }
 
     #[test]
@@ -798,6 +895,23 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         assert!(tail(&long).chars().all(|c| c == 'x'));
+        // wsl.exe's notice and the command's own UTF-8 output on one stream, either way round
+        let notice = "wsl: A localhost proxy configuration was detected but not mirrored.\r\n";
+        let error = "bash: ./deploy.sh: No such file or directory\n";
+        let mixed = [utf16le(notice), error.as_bytes().to_vec()].concat();
+        assert_eq!(decode_output(&mixed), format!("{notice}{error}"));
+        let mixed = [b"ok\n".to_vec(), utf16le(notice), b"done\n".to_vec()].concat();
+        assert_eq!(decode_output(&mixed), format!("ok\n{notice}done\n"));
+        // not only Latin script: Windows translates wsl.exe's messages
+        let russian = "Нет дистрибутива с указанным именем.\r\n";
+        assert_eq!(decode_output(&utf16le(russian)), russian);
+        // a cut one byte into UTF-16 loses that character only
+        let cut = &utf16le("ab\r\ncd\r\n")[1..];
+        assert_eq!(decode_output(cut), "b\r\ncd\r\n");
+    }
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     #[test]
@@ -830,7 +944,7 @@ mod tests {
         let marker = std::env::temp_dir().join(format!("toastback-job-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
         let cmd = format!(
-            r#"start /b cmd /c "ping -n 4 127.0.0.1 >nul & echo x > {}" & ping -n 30 127.0.0.1 >nul"#,
+            r#"start /b cmd /c "ping -n 4 127.0.0.1 >nul & echo x > "{}"" & ping -n 30 127.0.0.1 >nul"#,
             marker.display()
         );
         let r = Run {

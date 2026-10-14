@@ -10,11 +10,23 @@ pub fn same_distro(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
+/// Is `target` a distro other than the caller's? Only when both are known: a caller whose distro
+/// is unknown (no shim, or one that couldn't tell) keeps the user and directory it passed.
+pub fn is_other_distro(target: Option<&str>, caller: Option<&str>) -> bool {
+    target.zip(caller).is_some_and(|(t, c)| !same_distro(t, c))
+}
+
 /// True for `C:\…`, `C:/…` and UNC paths (`\\server\…`).
 pub fn is_windows_path(p: &str) -> bool {
     let b = p.as_bytes();
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
         || p.starts_with(r"\\")
+}
+
+/// A `cwd` that needs no caller directory: a Linux (`/…`) or Windows path, or the home
+/// directory (`~…`, which only `wsl` callbacks accept).
+pub fn is_absolute(p: &str) -> bool {
+    p.starts_with('/') || p.starts_with('~') || is_windows_path(p)
 }
 
 /// Convert a path from the spec to one Windows can open.

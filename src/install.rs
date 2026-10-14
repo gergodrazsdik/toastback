@@ -31,18 +31,8 @@ pub fn protocol_command(exe: &str) -> String {
 
 /// Parse `wsl.exe -l -q` output: UTF-16LE (with BOM/NULs) by default, UTF-8 with `WSL_UTF8=1`.
 pub fn parse_distro_list(bytes: &[u8]) -> Vec<String> {
-    let text = if bytes.len() >= 2 && bytes.iter().skip(1).step_by(2).any(|&b| b == 0) {
-        let units: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&c| u16::from_le_bytes(c))
-            .collect();
-        String::from_utf16_lossy(&units)
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
-    };
-    text.lines()
+    crate::exec::decode_output(bytes)
+        .lines()
         .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0'))
         .filter(|l| !l.is_empty())
         .map(str::to_string)
@@ -124,7 +114,7 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
-    use anyhow::{Context as _, Result, bail, ensure};
+    use anyhow::{Context as _, Result, anyhow, bail, ensure};
     use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -165,12 +155,18 @@ mod imp {
     }
 
     pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
+        // one listing (wsl.exe can take a while) for the shim targets and the install record
+        let distros = list_distros();
+        let listed = || match &distros {
+            Ok(d) => Ok(d.clone()),
+            Err(e) => Err(anyhow!("{e:#}")),
+        };
         // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
         // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
-        let targets = match shim_targets(opts.wsl, ctx) {
+        let targets = match super::shim_targets(opts.wsl, ctx, listed) {
             Ok(t) => t,
             Err(e) if opts.wsl.is_none() => {
-                eprintln!("warning: no WSL shim written: {e:#}");
+                errln!("warning: no WSL shim written: {e:#}");
                 Vec::new()
             }
             Err(e) => return Err(e),
@@ -214,8 +210,8 @@ mod imp {
 
         let mut record = store.install_record()?.unwrap_or_default();
         // forget shims in distros that were removed since (`wsl --unregister`)
-        if let Ok(existing) = list_distros() {
-            record.shims.retain(|t| has_distro(&existing, &t.distro));
+        if let Ok(existing) = &distros {
+            record.shims.retain(|t| has_distro(existing, &t.distro));
         }
         if opts.add_to_path {
             if add_to_path(&store.bin_dir().to_string_lossy())? {
@@ -239,7 +235,7 @@ mod imp {
                         .retain(|r| !(same_distro(&r.distro, &t.distro) && r.user == t.user));
                     record.shims.push(t.clone());
                 }
-                Err(e) => eprintln!("warning: shim for {}: {e:#}", t.distro),
+                Err(e) => errln!("warning: shim for {}: {e:#}", t.distro),
             }
         }
         record.version = version.into();
@@ -311,10 +307,6 @@ mod imp {
                 None,
             );
         }
-    }
-
-    fn shim_targets(wsl: Option<&str>, ctx: &Context) -> Result<Vec<ShimTarget>> {
-        super::shim_targets(wsl, ctx, list_distros)
     }
 
     pub fn list_distros() -> Result<Vec<String>> {
@@ -415,7 +407,7 @@ mod imp {
             match wsl_sh(t, &script, None) {
                 Ok(out) if out.contains("removed") => outln!("removed the shim in {}", t.distro),
                 Ok(_) => outln!("no toastback shim in {}", t.distro),
-                Err(e) => eprintln!("warning: shim in {}: {e:#}", t.distro),
+                Err(e) => errln!("warning: shim in {}: {e:#}", t.distro),
             }
         }
         if record.as_ref().is_some_and(|r| r.path_added)
@@ -424,7 +416,7 @@ mod imp {
             outln!("removed {} from your user PATH", store.bin_dir().display());
         }
         if let Err(e) = toast::remove_all() {
-            eprintln!("warning: clearing toasts: {e:#}");
+            errln!("warning: clearing toasts: {e:#}");
         }
         registry::delete_tree(&aumid_key())?;
         registry::delete_tree(PROTOCOL_KEY)?;
@@ -452,15 +444,15 @@ mod imp {
         }
         let busy = running_from(target);
         if !busy.is_empty() {
-            eprintln!(
+            errln!(
                 "warning: {} other toastback process(es) still run from {}:",
                 busy.len(),
                 target.display()
             );
             for (pid, path) in &busy {
-                eprintln!("  pid {pid}  {}", path.display());
+                errln!("  pid {pid}  {}", path.display());
             }
-            eprintln!(
+            errln!(
                 "  These are callbacks that haven't finished or dialogs that are still open (see\n  \
                  `toastback log`). Their files stay until they exit. Afterwards, remove the rest\n  \
                  from PowerShell with:\n    & \"{}\" uninstall{}",
