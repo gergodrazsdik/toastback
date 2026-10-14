@@ -33,7 +33,8 @@ run *args: build
 check:
     cargo fmt --check
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
-    shellcheck scripts/*.sh
+    shellcheck scripts/*.sh examples/*.sh
+    shellcheck -s bash res/shim.sh.tmpl
 
 alias lint := check
 
@@ -47,3 +48,23 @@ test:
 [group('dev')]
 fmt:
     cargo fmt
+
+# Build and install for this distro (the normal dev loop)
+[group('dev')]
+install: build
+    {{ exe }} install --wsl "$WSL_DISTRO_NAME" --distro "$WSL_DISTRO_NAME" --user "$(id -un)"
+
+# Remove the installation (keeps logs; `toastback uninstall --purge` removes those too)
+[group('dev')]
+uninstall:
+    toastback uninstall
+
+# Show every example notification
+[group('try')]
+demo:
+    for f in examples/*.json; do toastback "$f"; sleep 1; done
+
+# Recent toastback events
+[group('try')]
+log n="20":
+    toastback log -n {{ n }}

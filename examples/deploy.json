@@ -1,0 +1,13 @@
+{
+  "title": "Deploy to production?",
+  "body": "Build 1234 passed all checks.",
+  "attribution": "toastback example",
+  "buttons": [
+    { "id": "deploy", "label": "Deploy", "style": "success",
+      "run": { "wsl": "./examples/deploy.sh --env prod" } },
+    { "id": "logs", "label": "Open logs",
+      "run": { "open": "https://github.com/gergodrazsdik/toastback" } },
+    { "id": "later", "label": "Not now" }
+  ],
+  "data": { "build": 1234 }
+}
