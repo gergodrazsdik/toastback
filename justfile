@@ -78,17 +78,29 @@ log n="20":
 doctor:
     toastback doctor
 
-# Bump the version, commit, tag and push; the release workflow builds and publishes it
+# Step 1 of a release: on a new branch, bump Cargo.toml, date the changelog, push and open a PR
 [group('release')]
-[confirm('Commit, tag and push this release to GitHub? [y/N]')]
+[confirm('Create branch release-v{{ version }}, push it and open a PR? [y/N]')]
+bump version:
+    test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree not clean"; exit 1; }
+    git switch main
+    git pull --ff-only
+    git switch -c "release-v{{ version }}"
+    scripts/bump.sh "{{ version }}"
+    git commit -am "Release v{{ version }}"
+    git push -u origin "release-v{{ version }}"
+    gh pr create --title "Release v{{ version }}" --body "Bumps the version and dates the changelog. After merging: just release {{ version }}"
+
+# Step 2, after the bump PR is merged: tag main's head and push the tag; the release workflow publishes it
+[group('release')]
+[confirm('Tag main as v{{ version }} and push the tag? This publishes the release. [y/N]')]
 release version:
     test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree not clean"; exit 1; }
-    [[ "{{ version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must look like 1.2.3"; exit 1; }
-    sed -i '/^\[package\]/,/^\[/ s/^version = ".*"/version = "{{ version }}"/' Cargo.toml
-    grep -q '^version = "{{ version }}"$' Cargo.toml || { echo "version not updated in Cargo.toml"; exit 1; }
-    cargo xwin build --release --target {{ target }}  # refreshes Cargo.lock
-    git diff --quiet || git commit -am "release v{{ version }}"  # nothing to commit when already at this version
+    git switch main
+    git pull --ff-only
+    grep -q '^version = "{{ version }}"$' Cargo.toml || { echo "main isn't at {{ version }}: merge the 'just bump' PR first"; exit 1; }
+    grep -q '^## \[{{ version }}\]' CHANGELOG.md || { echo "CHANGELOG.md has no [{{ version }}] section"; exit 1; }
     git tag -a "v{{ version }}" -m "v{{ version }}"
-    git push --follow-tags
-    sleep 10
-    gh run watch "$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+    git push origin "v{{ version }}"
+    sleep 15
+    gh run watch "$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')" || echo "watch failed: see https://github.com/gergodrazsdik/toastback/actions"
