@@ -17,17 +17,18 @@ All five spikes passed, so the plan's primary designs stand and none of the fall
 
 - **The URI gets a slash.** Windows passes `toastback://act?id=…` to the handler as
   `toastback://act/?id=…`. The URI parser in `activate.rs` has to accept both forms.
-- **`ToastNotifier.Setting` fails** with `0x80070490` (Element not found) for a registry-only AUMID, even though
-  `Show()` works. `doctor` can't use it to check whether notifications are enabled. Read the per-app value under
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Toastback` (`Enabled`=0 means off)
-  instead, and treat a missing key as "enabled".
+- **`ToastNotifier.Setting` fails before the first toast.** For a registry-only AUMID it returns `0x80070490`
+  (Element not found) until the app has shown a toast. After that it returns `Enabled`, presumably once Windows has
+  created the app's notification settings entry. `doctor` treats that error as "no toast shown yet", not as broken.
+  If it needs an answer before the first toast, it can read
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Toastback` (`Enabled`=0 means off).
 - **`cargo xwin test` forces `wine`** as the runner and ignores `.cargo/config.toml`. `just test` sets
   `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=/usr/bin/env` so tests run through WSL interop.
 - lld warns LNK4099 because the xwin CRT has no PDBs. It's harmless and silenced with `/ignore:4099` in `.cargo/config.toml`.
 
-## Still to confirm by eye (manual)
+## Confirmed by eye (2026-10-14, rerun of spikes 3–5)
 
-- No console window flashes when a toast button is clicked. GUI subsystem, so none is expected.
+- No console window flashes when a toast button is clicked.
 - The toast shows the name "toastback" and the bell icon from `IconUri`.
-- The TaskDialog opens on top of other windows when started from a background process
+- The TaskDialog, started from a background process (WSL), opens on top of other windows
   (`TDN_CREATED` → `HWND_TOPMOST` + `SetForegroundWindow`).
