@@ -11,7 +11,9 @@ pub const CLI_EXE: &str = "toastback-cli.exe";
 pub fn render_shim(version: &str, win_exe: &str) -> String {
     // the path sits in single quotes: close, escaped quote, reopen
     let quoted = win_exe.replace('\'', r"'\''");
+    // LF only, even if the template was checked out with CRLF: it runs in bash
     SHIM_TEMPLATE
+        .replace('\r', "")
         .replace("{{VERSION}}", version)
         .replace("{{WIN_EXE_PATH}}", &quoted)
 }
@@ -570,6 +572,7 @@ mod tests {
             r"TOASTBACK_WIN_EXE='C:\Users\o'\''neil\AppData\Local\toastback\bin\toastback.exe'"
         ));
         assert!(!s.contains("{{"));
+        assert!(!s.contains('\r'));
     }
 
     #[test]

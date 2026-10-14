@@ -1,0 +1,5 @@
+# Text files keep LF everywhere: the shim template is embedded into the exe and written into WSL,
+# and a CRLF bash script doesn't run. Windows checkouts (CI) would otherwise convert to CRLF.
+* text=auto eol=lf
+*.png binary
+*.ico binary
