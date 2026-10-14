@@ -8,6 +8,24 @@
 // Most logic is platform-neutral and unit-tested on the Linux host, where only the tests use it.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+/// `print!` and `println!` that ignore a closed stdout: a reader that went away (`toastback log |
+/// head`) is no reason to panic, which with `panic = "abort"` would also skip restoring the console.
+#[allow(unused_macros)] // only Windows code prints
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout().lock(), $($arg)*);
+    }};
+}
+
+#[allow(unused_macros)] // only Windows code prints
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout().lock(), $($arg)*);
+    }};
+}
+
 mod activate;
 mod cli;
 #[cfg(windows)]

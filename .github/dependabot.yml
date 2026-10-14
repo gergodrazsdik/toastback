@@ -1,6 +1,7 @@
 version: 2
 updates:
-  # one grouped PR per ecosystem and week keeps CI runs down
+  # version updates come as one grouped PR per ecosystem and week (security updates come as they're found);
+  # at most 3 open at a time
   - package-ecosystem: cargo
     directory: /
     schedule:

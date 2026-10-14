@@ -6,10 +6,10 @@ use std::io::{IsTerminal as _, Read as _};
 use anyhow::{Context as _, Result, bail};
 
 use crate::cli::ShowArgs;
-use crate::context;
 #[cfg(windows)]
 use crate::spec::Mode;
 use crate::spec::{Context, Spec};
+use crate::{context, exec};
 #[cfg(windows)]
 use crate::{dialog, install, store, toast};
 
@@ -37,7 +37,7 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
     }
     match show_spec(store, spec) {
         Ok(id) => {
-            println!("{id}");
+            outln!("{id}");
             0
         }
         Err((code, e)) => {
@@ -53,9 +53,10 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
         Some("-") => read_stdin()?,
         Some(path) => {
             let path = context::to_windows_path(path, ctx)?;
-            std::fs::read_to_string(&path).with_context(|| format!("read {path}"))?
+            let bytes = std::fs::read(&path).with_context(|| format!("read {path}"))?;
+            decode_text(&bytes).with_context(|| format!("read {path}"))?
         }
-        None if flags.is_empty() => {
+        None if spec_from_stdin(&flags) => {
             if std::io::stdin().is_terminal() {
                 bail!("no spec: pass a FILE, - for stdin, or -t TITLE (see --help)");
             }
@@ -67,15 +68,53 @@ pub fn load_spec(args: &ShowArgs, ctx: &Context) -> Result<Spec> {
     spec.apply(&flags);
     spec.context.fill_from(ctx);
     spec.validate()?;
+    check_runs(&spec)?;
     Ok(spec)
 }
 
+/// What would otherwise only fail at click time: a relative cwd without a caller directory, ...
+fn check_runs(spec: &Spec) -> Result<()> {
+    let buttons = spec.buttons.iter().filter_map(|b| {
+        b.run
+            .as_ref()
+            .map(|r| (format!("button {:?}: run", b.id), r))
+    });
+    let default = spec.default.as_ref().map(|r| ("default".to_string(), r));
+    for (what, run) in buttons.chain(default) {
+        exec::check(run, &spec.context).context(what)?;
+    }
+    Ok(())
+}
+
+/// Without a FILE: -t or -m make a spec on their own; other flags (--mode, --id, -i, ...) only
+/// modify the one from stdin.
+fn spec_from_stdin(flags: &crate::spec::QuickFlags) -> bool {
+    flags.title.is_none() && flags.body.is_none()
+}
+
 fn read_stdin() -> Result<String> {
-    let mut s = String::new();
+    let mut bytes = Vec::new();
     std::io::stdin()
-        .read_to_string(&mut s)
+        .read_to_end(&mut bytes)
         .context("read spec from stdin")?;
-    Ok(s)
+    decode_text(&bytes).context("read spec from stdin")
+}
+
+/// Spec text as written by Windows tools too: UTF-8 with or without a BOM, or UTF-16 with one
+/// (Windows PowerShell's `Set-Content -Encoding UTF8`, `Out-File` and `>`).
+pub fn decode_text(bytes: &[u8]) -> Result<String> {
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let (chunks, odd) = rest.as_chunks::<2>();
+        anyhow::ensure!(odd.is_empty(), "odd number of bytes in UTF-16 text");
+        String::from_utf16(&chunks.iter().map(|&c| unit(c)).collect::<Vec<_>>())
+            .context("invalid UTF-16")
+    };
+    match bytes {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).context("invalid UTF-8"),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8(bytes.to_vec()).context("invalid UTF-8 (save the file as UTF-8)"),
+    }
 }
 
 /// Show a validated spec: id, token, cached images, pending file, toast. Errors carry an exit code.
@@ -110,10 +149,11 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
     let pending = Pending {
         token: new_token().map_err(failed)?,
         created: now,
-        expires_at: now + spec.expires().map_err(invalid)?.as_secs(),
+        expires_at: now + spec.lifetime().map_err(invalid)?.as_secs(),
         done: false,
         icon_path,
         image_path,
+        dialog_open: false,
         spec,
     };
     store.save_pending(&pending).map_err(failed)?;
@@ -129,8 +169,8 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
         }
         Mode::Dialog => {
             // a separate process shows the dialog, so the caller returns right away
-            let spawned =
-                install::gui_exe().and_then(|exe| dialog::spawn_detached(&exe, &["__dialog", &id]));
+            let spawned = install::gui_exe()
+                .and_then(|exe| dialog::spawn_detached(&exe, &["__dialog", "--", &id]));
             if let Err(e) = spawned {
                 let _ = store.remove_pending(&id);
                 return Err(failed(e));
@@ -158,4 +198,60 @@ pub fn validate_file(file: &str, ctx: &Context) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_windows_encodings() {
+        let json = r#"{"title": "Jörg"}"#;
+        let utf16le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(json.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let utf16be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(json.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        let bom: Vec<u8> = [0xEF, 0xBB, 0xBF].into_iter().chain(json.bytes()).collect();
+        for bytes in [json.as_bytes(), &bom, &utf16le, &utf16be] {
+            assert_eq!(decode_text(bytes).unwrap(), json);
+        }
+        assert!(decode_text(&[0xFF, 0xFE, 0x41]).is_err());
+        assert!(decode_text(&[0xC3]).is_err());
+    }
+
+    #[test]
+    fn only_title_and_body_replace_stdin() {
+        use crate::spec::{Mode, QuickFlags};
+        assert!(spec_from_stdin(&QuickFlags::default()));
+        assert!(spec_from_stdin(&QuickFlags {
+            mode: Some(Mode::Dialog),
+            id: Some("build-42".into()),
+            icon: Some("i.png".into()),
+            details: Some("d".into()),
+            ..Default::default()
+        }));
+        assert!(!spec_from_stdin(&QuickFlags {
+            title: Some("t".into()),
+            ..Default::default()
+        }));
+        assert!(!spec_from_stdin(&QuickFlags {
+            body: Some("b".into()),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn click_time_errors_surface_at_show_time() {
+        let spec = Spec::parse(
+            r#"{"title": "t", "context": {"distro": "D"},
+                "buttons": [{"id": "b", "label": "B", "run": {"cmd": "dir", "cwd": "/home/g"}}]}"#,
+        )
+        .unwrap();
+        let e = format!("{:#}", check_runs(&spec).unwrap_err());
+        assert!(e.contains(r#"button "b": run"#) && e.contains("UNC"), "{e}");
+    }
 }

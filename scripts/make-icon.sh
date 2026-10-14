@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Render the placeholder icon: res/icon.svg -> res/icon.png (256 px) + res/icon.ico (multi-size).
 # Needs resvg and ImageMagick (`magick`).
 set -euo pipefail

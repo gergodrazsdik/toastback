@@ -130,6 +130,16 @@ mod imp {
     }
 
     pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
+        // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
+        // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
+        let targets = match shim_targets(opts.wsl, ctx) {
+            Ok(t) => t,
+            Err(e) if opts.wsl.is_none() => {
+                eprintln!("warning: no WSL shim written: {e:#}");
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         // both exes ship side by side; install from whichever one is running
         let me = std::env::current_exe()?;
         let src_dir = me.parent().context("exe has no directory")?;
@@ -170,7 +180,7 @@ mod imp {
         let mut record = store.install_record()?.unwrap_or_default();
         // forget shims in distros that were removed since (`wsl --unregister`)
         if let Ok(existing) = list_distros() {
-            record.shims.retain(|t| existing.contains(&t.distro));
+            record.shims.retain(|t| has_distro(&existing, &t.distro));
         }
         if opts.add_to_path {
             if add_to_path(&store.bin_dir().to_string_lossy())? {
@@ -185,12 +195,14 @@ mod imp {
         }
 
         let shim = render_shim(version, &exe.to_string_lossy());
-        for t in &shim_targets(opts.wsl, ctx)? {
+        for t in &targets {
             match write_shim(t, &shim) {
                 Ok(()) => {
-                    if !record.shims.contains(t) {
-                        record.shims.push(t.clone());
-                    }
+                    // the same distro under another spelling replaces the old entry
+                    record.shims.retain(|r| {
+                        !(r.distro.eq_ignore_ascii_case(&t.distro) && r.user == t.user)
+                    });
+                    record.shims.push(t.clone());
                 }
                 Err(e) => eprintln!("warning: shim for {}: {e:#}", t.distro),
             }
@@ -279,10 +291,11 @@ mod imp {
             Some(d) => vec![ShimTarget {
                 distro: d.into(),
                 // the calling distro gets the calling user; others their default user
-                user: ctx
-                    .user
-                    .clone()
-                    .filter(|_| ctx.distro.as_deref() == Some(d)),
+                user: ctx.user.clone().filter(|_| {
+                    ctx.distro
+                        .as_deref()
+                        .is_some_and(|c| c.eq_ignore_ascii_case(d))
+                }),
             }],
             None => match &ctx.distro {
                 Some(d) => vec![ShimTarget {
@@ -292,6 +305,11 @@ mod imp {
                 None => all()?,
             },
         })
+    }
+
+    /// WSL distro names are case-insensitive (`wsl -d ubuntu` runs Ubuntu).
+    fn has_distro(list: &[String], name: &str) -> bool {
+        list.iter().any(|d| d.eq_ignore_ascii_case(name))
     }
 
     pub fn list_distros() -> Result<Vec<String>> {
@@ -382,7 +400,7 @@ mod imp {
         );
         let existing = list_distros().ok();
         for t in record.iter().flat_map(|r| &r.shims) {
-            if existing.as_ref().is_some_and(|e| !e.contains(&t.distro)) {
+            if existing.as_ref().is_some_and(|e| !has_distro(e, &t.distro)) {
                 println!(
                     "skipped the shim in {}: the distro no longer exists",
                     t.distro

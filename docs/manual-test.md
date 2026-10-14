@@ -68,6 +68,26 @@ covered by the smoke job, so here they only need to be checked once.
     shows the toast, and `toastback log` / the pending context names the right distro. The same with the variable
     set but empty: `-p Environment=WSL_DISTRO_NAME=`.
 
+## Edge cases
+
+30. **Double click:** in `examples/feedback.json`, a button whose callback takes a while (e.g. `{"wsl": "sleep 10"}`):
+    click it, then click the body or open the details dialog and pick it again. `toastback log` shows one
+    `callback_started` and a `rejected … already handled`.
+31. **Timeout kills the tree:** `{"cmd": "ping -n 600 127.0.0.1", "timeout": "5s"}` gives the "timed out" toast after
+    about 5 s, and Task Manager shows no `PING.EXE` left. `{"cmd": "start \"\" notepad"}` finishes at once, and
+    Notepad stays open.
+32. **cmd in a WSL directory:** `toastback` with a `cmd` button and `"cwd": "/home/<you>"` exits 2 with "cmd can't run
+    in \\wsl.localhost\…". A relative `"cwd": "sub"` on a `wsl` button runs in `$PWD/sub`.
+33. **Text starting with a dash:** `toastback -t cmake -m "-- Build files have been written"` shows that body.
+34. **Windows encodings:** in PowerShell 5.1, `@{title='Jörg'} | ConvertTo-Json | Set-Content -Encoding UTF8 a.json`
+    and `@{title='x'} | ConvertTo-Json > b.json` (UTF-16): `toastback-cli validate a.json b.json` says `ok` twice.
+35. **Re-show while a callback runs:** a spec with `"id": "standup"` and a button
+    `{"wsl": "sleep 5 && toastback ~/standup.json"}`: click it; the new toast stays after the first callback ends.
+36. **Closed pipe:** `toastback log -n 1000 | head -1` prints one line and no error; the terminal still returns
+    to column 0 after a newline.
+37. **Secrets stay out of the log:** a button with `"env": {"SECRET": "s3cr3t"}`, clicked: `grep -c s3cr3t
+    "$(wslpath "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/toastback/log/toastback.jsonl"` is 0.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

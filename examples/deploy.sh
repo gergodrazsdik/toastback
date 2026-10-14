@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Stand-in "deploy" for examples/deploy.json: shows what a callback sees.
 set -euo pipefail
 echo "deploying build $(printf %s "$TOASTBACK_DATA" | sed -n 's/.*"build":\([0-9]*\).*/\1/p') with: $*"

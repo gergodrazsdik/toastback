@@ -9,15 +9,17 @@ on:
 permissions:
   contents: read
 
-# a newer push to the same PR cancels the run in progress (main and release runs always finish)
+# A newer push to the same PR cancels its run in progress. Other runs get a group per commit: in a shared
+# group GitHub would also cancel a pending run when the next one queues, leaving a main commit untested.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   TARGET: x86_64-pc-windows-msvc
   CARGO_XWIN_VERSION: 0.23.1
+  ACTIONLINT_VERSION: 1.7.7
 
 jobs:
   build:
@@ -63,6 +65,13 @@ jobs:
         run: |
           shellcheck scripts/*.sh examples/*.sh
           shellcheck -s bash res/shim.sh.tmpl
+
+      - name: yamllint, actionlint
+        run: |
+          pipx install yamllint
+          yamllint -s .github .yamllint
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
+          "$RUNNER_TEMP/bin/actionlint"
 
       - name: Host tests
         run: cargo test --target x86_64-unknown-linux-gnu

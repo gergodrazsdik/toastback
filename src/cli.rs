@@ -89,14 +89,15 @@ impl CtxArgs {
 pub struct ShowArgs {
     /// JSON spec file, or - for stdin (default: stdin, unless -t/-m are given)
     pub file: Option<String>,
+    // text often comes from a script's output, which may start with `-` (`-- Build files ...`)
     /// Title (overrides the spec)
-    #[arg(short = 't', long)]
+    #[arg(short = 't', long, allow_hyphen_values = true)]
     pub title: Option<String>,
     /// Body text
-    #[arg(short = 'm', long = "body")]
+    #[arg(short = 'm', long = "body", allow_hyphen_values = true)]
     pub body: Option<String>,
     /// Details, shown in a dialog when the toast body is clicked
-    #[arg(short = 'd', long)]
+    #[arg(short = 'd', long, allow_hyphen_values = true)]
     pub details: Option<String>,
     /// Icon (PNG/JPG; Windows or WSL path)
     #[arg(short = 'i', long)]
@@ -215,7 +216,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                 ..Default::default()
             };
             match show::show_spec(&store, spec) {
-                Ok(_) => println!("done: a test notification is on its way"),
+                Ok(_) => outln!("done: a test notification is on its way"),
                 Err((_, e)) => eprintln!("warning: test notification failed: {e:#}"),
             }
             Ok(0)
@@ -226,17 +227,17 @@ pub fn run(cli: Cli) -> Result<u8> {
         }
         Command::Shim { win_exe } => {
             let exe = win_exe.unwrap_or_else(|| store.installed_exe().to_string_lossy().into());
-            print!("{}", install::render_shim(env!("CARGO_PKG_VERSION"), &exe));
+            out!("{}", install::render_shim(env!("CARGO_PKG_VERSION"), &exe));
             Ok(0)
         }
         Command::Validate { files } => {
             let mut bad = 0;
             for file in &files {
                 match show::validate_file(file, &ctx) {
-                    Ok(()) => println!("ok    {file}"),
+                    Ok(()) => outln!("ok    {file}"),
                     Err(e) => {
                         bad += 1;
-                        println!("FAIL  {file}: {e:#}");
+                        outln!("FAIL  {file}: {e:#}");
                     }
                 }
             }
@@ -245,9 +246,9 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Doctor { json } => {
             let checks = doctor::run(&store, &ctx, env!("CARGO_PKG_VERSION"));
             if json {
-                println!("{}", serde_json::to_string_pretty(&checks)?);
+                outln!("{}", serde_json::to_string_pretty(&checks)?);
             } else {
-                print!("{}", doctor::render(&checks));
+                out!("{}", doctor::render(&checks));
             }
             Ok(doctor::exit_code(&checks))
         }
@@ -258,7 +259,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                     let _ = toast::remove(id);
                     store.remove_pending(id)?;
                     store.log("removed", serde_json::json!({ "id": id }))?;
-                    println!("removed {id}");
+                    outln!("removed {id}");
                 } else {
                     missing += 1;
                     eprintln!("toastback: no notification {id}");
@@ -273,7 +274,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                 store.remove_pending(id)?;
             }
             store.log("cleared", serde_json::json!({ "ids": ids }))?;
-            println!("removed {} notification(s)", ids.len());
+            outln!("removed {} notification(s)", ids.len());
             Ok(0)
         }
         Command::Log { n, id } => {
@@ -283,7 +284,7 @@ pub fn run(cli: Cli) -> Result<u8> {
                 .filter(|e| id.is_none() || e["id"].as_str() == id.as_deref())
                 .collect();
             for e in &events[events.len().saturating_sub(n)..] {
-                print!("{}", format_event(e));
+                out!("{}", format_event(e));
             }
             Ok(0)
         }
@@ -393,6 +394,21 @@ mod tests {
         let cli = parse(&["show", "-", "--mode", "dialog"]);
         assert_eq!(show(&cli).file.as_deref(), Some("-"));
         assert_eq!(show(&cli).mode, Some(Mode::Dialog));
+
+        // text from a script may start with a dash
+        let cli = parse(&[
+            "-t",
+            "cmake",
+            "-m",
+            "-- Build files have been written",
+            "-d",
+            "-1",
+        ]);
+        assert_eq!(
+            show(&cli).body.as_deref(),
+            Some("-- Build files have been written")
+        );
+        assert_eq!(show(&cli).details.as_deref(), Some("-1"));
 
         // no arguments at all: show, reading stdin
         assert_eq!(show(&parse(&[])).file, None);

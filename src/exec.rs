@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use serde_json::{Value, json};
 
 use crate::context;
 use crate::spec::{Context, Run, RunKind};
@@ -30,6 +31,27 @@ pub enum Plan {
     },
 }
 
+impl Plan {
+    /// For the log: what runs and where, with the names of the environment variables but not their
+    /// values (an `env` value may be a token).
+    pub fn describe(&self) -> Value {
+        match self {
+            Plan::Process {
+                program,
+                fallback,
+                args,
+                raw_args,
+                env,
+                cwd,
+            } => json!({
+                "program": program, "fallback": fallback, "args": args, "raw_args": raw_args,
+                "cwd": cwd, "env": env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            }),
+            Plan::Open { target, cwd } => json!({ "open": target, "cwd": cwd }),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Outcome {
     /// `None` when killed after the timeout.
@@ -54,10 +76,14 @@ pub fn plan(
     env.extend(run.env.iter().map(|(k, v)| (k.clone(), v.clone())));
 
     let windows_cwd = || -> Result<Option<String>> {
-        run.cwd
-            .as_deref()
-            .map(|c| context::to_windows_path(c, ctx))
-            .transpose()
+        let Some(c) = run.cwd.as_deref() else {
+            return Ok(None);
+        };
+        let win = context::to_windows_path(c, ctx)?;
+        if !context::is_windows_path(&win) {
+            bail!("cwd {c:?} is relative, and there's no caller directory to resolve it against");
+        }
+        Ok(Some(win))
     };
     let process = |program: &str, args: Vec<String>, env, cwd| Plan::Process {
         program: program.into(),
@@ -70,15 +96,26 @@ pub fn plan(
 
     Ok(match run.kind()? {
         RunKind::WslShell(_) | RunKind::WslArgv(_) => {
+            // The caller's user and directory belong to the caller's distro: a run in another one
+            // gets that distro's default user and the home directory, unless it sets them.
+            let other_distro = run.distro.as_ref().is_some_and(|d| {
+                ctx.distro
+                    .as_ref()
+                    .is_none_or(|c| !c.eq_ignore_ascii_case(d))
+            });
             let mut args = Vec::new();
             if let Some(d) = run.distro.as_ref().or(ctx.distro.as_ref()) {
                 args.extend(["-d".into(), d.clone()]);
             }
-            if let Some(u) = run.user.as_ref().or(ctx.user.as_ref()) {
+            let user = run
+                .user
+                .as_ref()
+                .or(ctx.user.as_ref().filter(|_| !other_distro));
+            if let Some(u) = user {
                 args.extend(["-u".into(), u.clone()]);
             }
-            let cwd = run.cwd.as_ref().or(ctx.cwd.as_ref());
-            args.extend(["--cd".into(), cwd.cloned().unwrap_or_else(|| "~".into())]);
+            let base = ctx.cwd.as_deref().filter(|_| !other_distro);
+            args.extend(["--cd".into(), wsl_cwd(run.cwd.as_deref(), base)?]);
             // --exec: wsl.exe passes the argv as is. `--` would hand the rest of the command line
             // to the user's login shell for a second round of parsing.
             args.push("--exec".into());
@@ -93,16 +130,28 @@ pub fn plan(
                 None => names.join(":"),
             };
             env.push(("WSLENV".into(), wslenv));
+            // wsl.exe's own messages ("no such distro", ...) in UTF-8, not UTF-16, for the log
+            env.push(("WSL_UTF8".into(), "1".into()));
             process("wsl.exe", args, env, None)
         }
-        RunKind::Cmd(s) => Plan::Process {
-            program: "cmd.exe".into(),
-            fallback: None,
-            args: Vec::new(),
-            raw_args: Some(format!("/d /s /c \"{s}\"")),
-            env,
-            cwd: windows_cwd()?,
-        },
+        RunKind::Cmd(s) => {
+            let cwd = windows_cwd()?;
+            if let Some(c) = cwd.as_deref().filter(|c| c.starts_with(r"\\")) {
+                // cmd.exe would print a warning and run the command in C:\Windows instead
+                bail!(
+                    "cmd can't run in {c}: cmd.exe doesn't accept UNC directories (WSL paths outside \
+                     /mnt/<drive>). Use a Windows directory as cwd, or pwsh"
+                );
+            }
+            Plan::Process {
+                program: "cmd.exe".into(),
+                fallback: None,
+                args: Vec::new(),
+                raw_args: Some(format!("/d /s /c \"{s}\"")),
+                env,
+                cwd,
+            }
+        }
         RunKind::Pwsh(s) => Plan::Process {
             program: "pwsh.exe".into(),
             fallback: Some("powershell.exe".into()),
@@ -122,6 +171,40 @@ pub fn plan(
             target: target.into(),
             cwd: windows_cwd()?,
         },
+    })
+}
+
+/// Check at show time what `plan` would reject at click time (a relative cwd with no caller
+/// directory, cmd with a UNC cwd), so the error reaches the caller instead of the log.
+pub fn check(run: &Run, ctx: &Context) -> Result<()> {
+    plan(run, ctx, &[], None).map(drop)
+}
+
+/// The `--cd` for wsl.exe, which takes only `~`, absolute Linux paths and Windows paths: a relative
+/// `cwd` is resolved against the caller's directory.
+fn wsl_cwd(cwd: Option<&str>, base: Option<&str>) -> Result<String> {
+    let absolute =
+        |c: &str| c.starts_with('/') || c.starts_with('~') || context::is_windows_path(c);
+    let base = base.filter(|b| absolute(b));
+    Ok(match (cwd, base) {
+        (Some(c), _) if absolute(c) => c.to_string(),
+        (Some(c), Some(b)) if b.starts_with('/') => format!("{}/{c}", b.trim_end_matches('/')),
+        (Some(c), _) => {
+            bail!("cwd {c:?} is relative, and there's no caller directory to resolve it against")
+        }
+        (None, Some(b)) => b.to_string(),
+        (None, None) => "~".into(),
+    })
+}
+
+/// `scheme:…` with a scheme of two or more characters (so not `C:\…`): `https://…`, `mailto:…`.
+pub fn is_url(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() >= 2
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
     })
 }
 
@@ -161,32 +244,47 @@ pub use imp::execute;
 #[cfg(windows)]
 mod imp {
     use std::io::Read;
+    use std::os::windows::io::AsRawHandle as _;
     use std::os::windows::process::CommandExt as _;
     use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use anyhow::{Context as _, Result, bail};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+    };
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR, w};
 
-    use super::{Outcome, Plan, TAIL_BYTES, tail};
+    use super::{Outcome, Plan, TAIL_BYTES, is_url, tail};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// After the callback exits, how long to wait for programs it started that still hold its
+    /// stdout/stderr (`start notepad`, a server in the background).
+    const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 
     pub fn execute(plan: &Plan, timeout: Option<Duration>) -> Result<Outcome> {
         let start = Instant::now();
         match plan {
             Plan::Open { target, cwd } => {
                 let dir = cwd.as_deref().map(HSTRING::from);
+                // %VAR%s in paths, not URLs: `?q=%OS%` must stay as it is
+                let target = if is_url(target) {
+                    target.clone()
+                } else {
+                    expand_env(target)
+                };
                 // SAFETY: all strings are NUL-terminated HSTRINGs that outlive the call.
                 let h = unsafe {
                     ShellExecuteW(
                         None,
                         w!("open"),
-                        &HSTRING::from(expand_env(target)),
+                        &HSTRING::from(&target),
                         PCWSTR::null(),
                         dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
                         SW_SHOWNORMAL,
@@ -243,14 +341,21 @@ mod imp {
                     }
                     (r, _) => r.with_context(|| format!("start {program}"))?,
                 };
-                let out = reader(child.stdout.take().unwrap());
-                let err = reader(child.stderr.take().unwrap());
+                // Everything the callback starts joins its job, so a timeout ends all of it, not
+                // just cmd.exe or pwsh.exe. (A program started in the moment before the
+                // assignment escapes the job; Command can't start the child suspended.)
+                let job = Job::new().ok().filter(|j| j.assign(&child));
+                let out = Drain::start(child.stdout.take().unwrap());
+                let err = Drain::start(child.stderr.take().unwrap());
                 let mut timed_out = false;
                 let status = loop {
                     if let Some(s) = child.try_wait()? {
                         break Some(s);
                     }
                     if timeout.is_some_and(|t| start.elapsed() >= t) {
+                        if let Some(job) = &job {
+                            job.terminate();
+                        }
                         let _ = child.kill();
                         let _ = child.wait();
                         timed_out = true;
@@ -258,14 +363,45 @@ mod imp {
                     }
                     thread::sleep(Duration::from_millis(50));
                 };
+                let duration = start.elapsed();
+                let deadline = Instant::now() + OUTPUT_GRACE;
                 Ok(Outcome {
                     exit_code: status.and_then(|s| s.code()),
                     timed_out,
-                    duration: start.elapsed(),
-                    stdout: tail(&out.join().unwrap_or_default()),
-                    stderr: tail(&err.join().unwrap_or_default()),
+                    duration,
+                    stdout: out.collect(deadline),
+                    stderr: err.collect(deadline),
                 })
             }
+        }
+    }
+
+    /// A job object for one callback's process tree. Closing it leaves the processes running:
+    /// `start notepad` from a callback keeps its window.
+    struct Job(HANDLE);
+
+    impl Job {
+        fn new() -> Result<Job> {
+            // SAFETY: no security attributes, no name; the handle is owned by the Job and closed
+            // on drop.
+            Ok(Job(unsafe { CreateJobObjectW(None, PCWSTR::null()) }?))
+        }
+
+        fn assign(&self, child: &std::process::Child) -> bool {
+            // SAFETY: both handles are valid for the call; the child's stays owned by `child`.
+            unsafe { AssignProcessToJobObject(self.0, HANDLE(child.as_raw_handle())) }.is_ok()
+        }
+
+        fn terminate(&self) {
+            // SAFETY: valid job handle.
+            let _ = unsafe { TerminateJobObject(self.0, 1) };
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from CreateJobObjectW and is closed once.
+            let _ = unsafe { CloseHandle(self.0) };
         }
     }
 
@@ -287,22 +423,43 @@ mod imp {
         }
     }
 
-    /// Drain a pipe on a thread, keeping only the last `TAIL_BYTES` (plus one read's worth).
-    fn reader(mut r: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
-        thread::spawn(move || {
-            let mut kept = Vec::new();
-            let mut buf = [0u8; 4096];
-            while let Ok(n) = r.read(&mut buf) {
-                if n == 0 {
-                    break;
+    /// Drains a pipe on a thread, keeping only the last `TAIL_BYTES` (plus one read's worth).
+    struct Drain {
+        kept: Arc<Mutex<Vec<u8>>>,
+        done: mpsc::Receiver<()>,
+    }
+
+    impl Drain {
+        fn start(mut r: impl Read + Send + 'static) -> Drain {
+            let kept = Arc::new(Mutex::new(Vec::new()));
+            let (tx, done) = mpsc::channel();
+            let shared = kept.clone();
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = r.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    kept.extend_from_slice(&buf[..n]);
+                    if kept.len() > 2 * TAIL_BYTES {
+                        let cut = kept.len() - TAIL_BYTES;
+                        kept.drain(..cut);
+                    }
                 }
-                kept.extend_from_slice(&buf[..n]);
-                if kept.len() > 2 * TAIL_BYTES {
-                    kept.drain(..kept.len() - TAIL_BYTES);
-                }
-            }
-            kept
-        })
+                let _ = tx.send(());
+            });
+            Drain { kept, done }
+        }
+
+        /// The output so far, once the pipe closes or at `deadline`, whichever is first. A
+        /// program the callback left running may hold the pipe open for good.
+        fn collect(&self, deadline: Instant) -> String {
+            let _ = self
+                .done
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+            tail(&self.kept.lock().unwrap_or_else(|e| e.into_inner()))
+        }
     }
 }
 
@@ -381,6 +538,112 @@ mod tests {
             ["-d", "Debian", "--cd", "/tmp", "--exec", "ls", "-la"]
         );
         assert!(env.contains(&("WSLENV".into(), "TOASTBACK_ID/u".into())));
+    }
+
+    #[test]
+    fn other_distro_gets_its_own_user_and_home() {
+        let args = |json: &str, ctx: &Context| match plan(&run(json), ctx, &vars(), None).unwrap() {
+            Plan::Process { args, .. } => args,
+            p => panic!("{p:?}"),
+        };
+        assert_eq!(
+            args(r#"{"wsl": ["id"], "distro": "Debian"}"#, &ctx()),
+            ["-d", "Debian", "--cd", "~", "--exec", "id"]
+        );
+        // the caller's own distro (in another case): the caller's user and directory
+        assert_eq!(
+            args(r#"{"wsl": ["id"], "distro": "ubuntu"}"#, &ctx()),
+            [
+                "-d",
+                "ubuntu",
+                "-u",
+                "g",
+                "--cd",
+                "/home/g/app",
+                "--exec",
+                "id"
+            ]
+        );
+        assert_eq!(
+            args(
+                r#"{"wsl": ["id"], "distro": "Debian", "user": "root", "cwd": "/srv"}"#,
+                &ctx()
+            ),
+            ["-d", "Debian", "-u", "root", "--cd", "/srv", "--exec", "id"]
+        );
+    }
+
+    #[test]
+    fn relative_cwd_resolves_against_the_caller() {
+        let cd = |json: &str, ctx: &Context| {
+            plan(&run(json), ctx, &vars(), None).map(|p| match p {
+                Plan::Process { args, cwd, .. } => {
+                    let i = args.iter().position(|a| a == "--cd");
+                    i.map_or(cwd, |i| Some(args[i + 1].clone()))
+                }
+                p => panic!("{p:?}"),
+            })
+        };
+        let wsl = r#"{"wsl": "x", "cwd": "scripts"}"#;
+        assert_eq!(cd(wsl, &ctx()).unwrap().unwrap(), "/home/g/app/scripts");
+        assert!(cd(wsl, &Context::default()).is_err());
+        assert_eq!(
+            cd(r#"{"wsl": "x", "cwd": "~/src"}"#, &Context::default())
+                .unwrap()
+                .unwrap(),
+            "~/src"
+        );
+        // Windows forms: through the caller's directory, so a UNC path
+        assert_eq!(
+            cd(r#"{"pwsh": "x", "cwd": "scripts"}"#, &ctx())
+                .unwrap()
+                .unwrap(),
+            r"\\wsl.localhost\Ubuntu\home\g\app\scripts"
+        );
+        assert!(cd(r#"{"pwsh": "x", "cwd": "scripts"}"#, &Context::default()).is_err());
+    }
+
+    #[test]
+    fn cmd_refuses_unc_cwd() {
+        let r = run(r#"{"cmd": "del /q *.log", "cwd": "/home/g/build"}"#);
+        let e = plan(&r, &ctx(), &vars(), None).unwrap_err().to_string();
+        assert!(e.contains("UNC"), "{e}");
+        assert!(check(&r, &ctx()).is_err());
+        check(&run(r#"{"cmd": "dir", "cwd": "/mnt/c/build"}"#), &ctx()).unwrap();
+    }
+
+    #[test]
+    fn describe_leaves_out_env_values() {
+        let p = plan(
+            &run(r#"{"wsl": "gh release upload", "env": {"GH_TOKEN": "ghp_secret"}}"#),
+            &ctx(),
+            &vars(),
+            None,
+        )
+        .unwrap();
+        let d = p.describe().to_string();
+        assert!(!d.contains("ghp_secret"), "{d}");
+        assert!(d.contains("GH_TOKEN"), "{d}");
+        assert!(d.contains("gh release upload"), "{d}");
+    }
+
+    #[test]
+    fn urls_and_paths() {
+        for url in [
+            "https://x.example/?q=%OS%",
+            "mailto:a@b.c",
+            "ms-settings:display",
+        ] {
+            assert!(is_url(url), "{url}");
+        }
+        for path in [
+            r"C:\Users\%USERNAME%",
+            "%USERPROFILE%\\x",
+            r"\\srv\share",
+            "notes.txt",
+        ] {
+            assert!(!is_url(path), "{path}");
+        }
     }
 
     #[test]
