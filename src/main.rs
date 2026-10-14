@@ -4,6 +4,8 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod activate;
+#[cfg(windows)]
+mod console;
 mod context;
 mod exec;
 mod install;
@@ -180,6 +182,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // the protocol handler has no terminal; everything else may have been started from one
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).is_none_or(|a| a != "activate") {
+        console::attach_missing_streams();
+    }
     let cli = Cli::parse_with_default(std::env::args_os()).unwrap_or_else(|e| e.exit());
     match run(cli) {
         Ok(code) => ExitCode::from(code),

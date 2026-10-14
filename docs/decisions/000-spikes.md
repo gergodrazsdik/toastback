@@ -8,10 +8,26 @@ All five spikes passed, so the plan's primary designs stand and none of the fall
 | # | Question | Result |
 |---|---|---|
 | 1 | Cross-build a GUI-subsystem exe with manifest + icon + version info | **Yes.** `cargo xwin build` + `embed-resource` (llvm-rc) → `PE32+ (GUI)`, version info and icon present. Release size 771 KB (clap + windows). |
-| 2 | stdout / stderr / exit code from WSL | **Yes**, through pipes (`id=$(…)`) and through a pty. A GUI-subsystem exe is enough, so no `toastback-cli.exe`. |
+| 2 | stdout / stderr / exit code from WSL | **Partly. Corrected after M1, see below.** Pipes (`id=$(…)`) and the exit code work. In an interactive terminal, nothing printed showed up. |
 | 3 | Toast from an unpackaged exe with only the registry AUMID | **Yes.** `HKCU\Software\Classes\AppUserModelId\Toastback` (`DisplayName`, `IconUri`) is enough, no Start Menu shortcut needed. |
 | 4 | Protocol-activated button runs `toastback.exe activate "<uri>"` | **Yes**, both from a toast button click and from `Start-Process toastback://…`. |
 | 5 | TaskDialogIndirect with custom buttons | **Yes.** The manifest pulls in Common Controls v6. The selected button id comes back. |
+
+## Correction: terminal output (found in M1 manual testing)
+
+The spike only tested captured output, plus a Python pty in a session that has no Windows console. In a real
+interactive terminal, the GUI-subsystem exe gets **no std handles at all**. `GetStdHandle` fails, so `toastback …`
+printed nothing (no id, no `log`). A probe (`__probe`, since removed) showed this in a WSL terminal and in
+PowerShell. In both, `AttachConsole(ATTACH_PARENT_PROCESS)` followed by writing to `CONOUT$` works. Redirected
+streams always arrive as pipe handles.
+
+Fix (`src/console.rs`): at startup, except in `activate`, every stream without a handle is pointed at the
+parent's console (`CONIN$`/`CONOUT$` + `SetStdHandle`). Pipes are left alone, so captured output never also
+goes to the console. No `toastback-cli.exe` is needed for WSL.
+
+Remaining caveat: interactive **cmd/PowerShell don't wait for GUI-subsystem exes**. The output lands after the
+next prompt, and `$LASTEXITCODE` isn't set. `$id = toastback.exe …` (captured) waits. If interactive Windows-side
+use matters, the plan's fallback `toastback-cli.exe` (console subsystem) is still an option.
 
 ## Findings that change the implementation
 
