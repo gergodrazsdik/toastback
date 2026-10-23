@@ -1,0 +1,14 @@
+{
+  "id": "build-main",
+  "title": "Build failed",
+  "body": "main @ abc1234: 3 of 412 tests failed",
+  "icon": "error",
+  "attribution": "CI",
+  "buttons": [
+    { "id": "log", "label": "Open log",
+      "run": { "open": "https://ci.example.com/builds/1234" } },
+    { "id": "rerun", "label": "Re-run",
+      "run": { "wsl": "sleep 3 && echo 'replace with your build command'", "timeout": "30m" } }
+  ],
+  "notify_on_success": true
+}

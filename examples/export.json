@@ -1,0 +1,12 @@
+{
+  "title": "Export finished",
+  "body": "report.pdf is in your Downloads folder.",
+  "attribution": "report export",
+  "buttons": [
+    { "id": "folder", "label": "Open folder",
+      "run": { "open": "%USERPROFILE%\\Downloads" } },
+    { "id": "copy", "label": "Copy path",
+      "run": { "pwsh": "Set-Clipboard \"$env:USERPROFILE\\Downloads\\report.pdf\"" } }
+  ],
+  "notify_on_success": true
+}

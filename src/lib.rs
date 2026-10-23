@@ -55,6 +55,7 @@ mod console;
 mod context;
 mod dialog;
 mod doctor;
+mod examples;
 mod exec;
 mod install;
 #[cfg(windows)]

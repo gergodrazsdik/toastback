@@ -2,13 +2,14 @@
   "title": "Deploy to production?",
   "body": "Build 1234 passed all checks.",
   "details": "Commit abc1234 by g: \"Fix the frobnicator\".\n\n412 tests passed, 0 failed. The deploy takes about 3 minutes and can be rolled back.",
-  "attribution": "toastback example",
+  "attribution": "CI",
   "buttons": [
     { "id": "deploy", "label": "Deploy", "style": "success",
-      "run": { "wsl": "./examples/deploy.sh --env prod" } },
+      "run": { "wsl": "echo \"pretend deploy of $TOASTBACK_ID, data=$TOASTBACK_DATA\"; echo \"distro=$WSL_DISTRO_NAME user=$(id -un) cwd=$PWD\"" } },
     { "id": "logs", "label": "Open logs",
-      "run": { "open": "https://github.com/gergodrazsdik/toastback" } },
+      "run": { "open": "https://ci.example.com/builds/1234" } },
     { "id": "later", "label": "Not now" }
   ],
-  "data": { "build": 1234 }
+  "data": { "build": 1234 },
+  "notify_on_success": true
 }

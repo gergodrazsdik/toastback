@@ -12,14 +12,22 @@ use crate::VERSION;
 use crate::spec::Spec;
 use crate::spec::{Context, Mode, QuickFlags, Scenario};
 #[cfg(windows)]
-use crate::{activate, doctor, install, show, toast};
+use crate::{activate, doctor, examples, install, show, toast};
 
 /// Async Windows toasts with callbacks, for WSL and scripts.
 ///
 /// Shows a notification described by a JSON spec (FILE, or stdin) and/or quick flags, prints its
 /// id and exits. Clicking a button later runs that button's callback.
+/// Shown after the help of the top-level command and `show`.
+const HELP_EXAMPLES: &str = "\
+Examples:
+  toastback -t \"Hello\" -m \"World\"                  a toast
+  toastback -t \"Build failed\" -i error             with a built-in icon
+  toastback --mode dialog -t \"Hello\" -m \"World\"    a dialog instead
+  toastback examples                               ready-made specs with buttons and callbacks";
+
 #[derive(Parser)]
-#[command(version = VERSION)]
+#[command(version = VERSION, after_help = HELP_EXAMPLES)]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -182,6 +190,7 @@ impl ShowArgs {
 #[derive(Subcommand)]
 enum Command {
     /// Show a notification (the default command)
+    #[command(after_help = HELP_EXAMPLES)]
     Show(ShowArgs),
     /// Install for the current user: copy the exes, register them, write the WSL shim
     Install {
@@ -203,6 +212,11 @@ enum Command {
         /// Windows path of the exe the shim runs (default: the installed copy)
         #[arg(long)]
         win_exe: Option<String>,
+    },
+    /// List the built-in example specs, or print one
+    Examples {
+        /// Example to print (save it with `>`, or pipe it into `toastback`)
+        name: Option<String>,
     },
     /// Check specs without showing them
     Validate {
@@ -284,6 +298,21 @@ pub fn run(cli: Cli) -> Result<u8> {
             out!("{}", install::render_shim(env!("CARGO_PKG_VERSION"), &exe));
             Ok(0)
         }
+        Command::Examples { name: None } => {
+            out!("{}", examples::list());
+            Ok(0)
+        }
+        Command::Examples { name: Some(name) } => match examples::find(&name) {
+            Some(e) => {
+                out!("{}", e.json);
+                Ok(0)
+            }
+            None => {
+                errln!("toastback: no example {name:?}. The examples are:\n");
+                errln!("{}", examples::list().trim_end());
+                Ok(show::EXIT_INVALID)
+            }
+        },
         Command::Validate { files } => {
             let mut bad = 0;
             for file in &files {
@@ -420,6 +449,25 @@ mod tests {
     }
 
     #[test]
+    fn help_shows_examples() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let top = cmd.render_help().to_string();
+        let show = cmd
+            .find_subcommand_mut("show")
+            .unwrap()
+            .render_help()
+            .to_string();
+        for help in [top, show] {
+            assert!(
+                help.contains(r#"toastback -t "Hello" -m "World""#),
+                "{help}"
+            );
+            assert!(help.contains("toastback examples "), "{help}");
+        }
+    }
+
+    #[test]
     fn show_is_the_default_and_context_is_global() {
         let parse = |args: &[&str]| {
             Cli::parse_with_default(std::iter::once("toastback").chain(args.iter().copied()))
@@ -444,6 +492,13 @@ mod tests {
 
         let cli = parse(&["--distro=D", "examples/deploy.json"]);
         assert_eq!(show(&cli).file.as_deref(), Some("examples/deploy.json"));
+
+        let cli = parse(&["--distro=D", "examples", "deploy"]);
+        assert!(matches!(cli.command, Command::Examples { name: Some(ref n) } if n == "deploy"));
+        let cli = parse(&["examples"]);
+        assert!(matches!(cli.command, Command::Examples { name: None }));
+        let cli = parse(&["./examples"]);
+        assert_eq!(show(&cli).file.as_deref(), Some("./examples"));
 
         let cli = parse(&["show", "-", "--mode", "dialog"]);
         assert_eq!(show(&cli).file.as_deref(), Some("-"));

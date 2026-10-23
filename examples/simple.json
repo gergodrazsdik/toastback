@@ -1,5 +1,6 @@
 {
   "title": "Backup finished",
   "body": "42 GB in 12 min",
-  "attribution": "nightly backup"
+  "attribution": "nightly backup",
+  "sound": "silent"
 }

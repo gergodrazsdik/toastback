@@ -63,7 +63,7 @@ jobs:
 
       - name: shellcheck
         run: |
-          shellcheck scripts/*.sh examples/*.sh
+          shellcheck scripts/*.sh
           shellcheck -s bash res/shim.sh.tmpl
 
       - name: Cache actionlint
@@ -133,6 +133,10 @@ jobs:
 
           Invoke-Toastback --version
           Invoke-Toastback validate (Get-ChildItem examples\*.json | ForEach-Object { "examples\$($_.Name)" })
+          Invoke-Toastback examples
+          # the embedded copy is a valid spec too
+          & $tb examples deploy | & $tb validate -
+          if ($LASTEXITCODE) { throw "the built-in deploy example doesn't validate" }
 
           # the "installed" test toast may fail on a runner without a desktop: install only warns then
           Invoke-Toastback install --wsl none
