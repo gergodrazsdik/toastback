@@ -2,7 +2,7 @@
 //! Native dialogs (TaskDialogIndirect): for `mode: dialog`, and the details dialog a toast body
 //! click opens. The model is pure and tested on the host; showing it is Windows-only.
 
-use crate::spec::{Scenario, Spec};
+use crate::spec::{Scenario, Spec, StockIcon};
 
 /// Custom button ids start here; `id - BUTTON_BASE` is the index into `Model::buttons`.
 pub const BUTTON_BASE: i32 = 1000;
@@ -11,6 +11,8 @@ pub const BUTTON_BASE: i32 = 1000;
 pub enum Icon {
     Information,
     Warning,
+    Error,
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,9 +37,14 @@ pub fn model(spec: &Spec) -> Model {
             .iter()
             .map(|b| (b.id.clone(), b.label.clone()))
             .collect(),
-        icon: match spec.scenario {
-            Scenario::Alarm | Scenario::Urgent => Icon::Warning,
-            Scenario::Default | Scenario::Reminder => Icon::Information,
+        // a stock `icon` names the dialog's icon; an image path doesn't show in dialogs
+        icon: match (spec.stock_icon(), spec.scenario) {
+            (Some(StockIcon::Info), _) => Icon::Information,
+            (Some(StockIcon::Warning), _) => Icon::Warning,
+            (Some(StockIcon::Error), _) => Icon::Error,
+            (Some(StockIcon::Question), _) => Icon::Question,
+            (None, Scenario::Alarm | Scenario::Urgent) => Icon::Warning,
+            (None, Scenario::Default | Scenario::Reminder) => Icon::Information,
         },
         // three or more buttons read better as a vertical list of command links
         command_links: spec.buttons.len() >= 3,
@@ -68,14 +75,15 @@ mod imp {
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Controls::{
-        TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0,
-        TD_INFORMATION_ICON, TD_WARNING_ICON, TDCBF_CLOSE_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
-        TDF_USE_COMMAND_LINKS, TDN_CREATED, TaskDialogIndirect,
+        LIM_LARGE, LoadIconMetric, TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG,
+        TASKDIALOGCONFIG_0, TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON,
+        TDCBF_CLOSE_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_USE_COMMAND_LINKS,
+        TDF_USE_HICON_MAIN, TDN_CREATED, TaskDialogIndirect,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, HWND_TOPMOST, ICON_BIG,
-        ICON_SMALL, LoadIconW, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, SetForegroundWindow,
-        SetWindowPos, WM_SETICON,
+        DestroyIcon, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, HICON, HWND_TOPMOST,
+        ICON_BIG, ICON_SMALL, IDI_QUESTION, LoadIconW, SWP_NOMOVE, SWP_NOSIZE, SendMessageW,
+        SetForegroundWindow, SetWindowPos, WM_SETICON,
     };
     use windows::core::{HSTRING, PCWSTR};
 
@@ -108,6 +116,18 @@ mod imp {
         if model.command_links {
             flags |= TDF_USE_COMMAND_LINKS;
         }
+        // TaskDialog has no stock question icon: use the system one, scaled for the DPI
+        let question = match model.icon {
+            Icon::Question => Some(OwnedIcon(
+                // SAFETY: IDI_QUESTION is a predefined system icon; no module handle needed.
+                unsafe { LoadIconMetric(None, IDI_QUESTION, LIM_LARGE) }
+                    .context("LoadIconMetric")?,
+            )),
+            _ => None,
+        };
+        if question.is_some() {
+            flags |= TDF_USE_HICON_MAIN;
+        }
         let config = TASKDIALOGCONFIG {
             cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
             dwFlags: flags,
@@ -118,10 +138,14 @@ mod imp {
                 Default::default()
             },
             pszWindowTitle: PCWSTR(title.as_ptr()),
-            Anonymous1: TASKDIALOGCONFIG_0 {
-                pszMainIcon: match model.icon {
-                    Icon::Information => TD_INFORMATION_ICON,
-                    Icon::Warning => TD_WARNING_ICON,
+            Anonymous1: match &question {
+                Some(icon) => TASKDIALOGCONFIG_0 { hMainIcon: icon.0 },
+                None => TASKDIALOGCONFIG_0 {
+                    pszMainIcon: match model.icon {
+                        Icon::Warning => TD_WARNING_ICON,
+                        Icon::Error => TD_ERROR_ICON,
+                        Icon::Information | Icon::Question => TD_INFORMATION_ICON,
+                    },
                 },
             },
             pszMainInstruction: PCWSTR(instruction.as_ptr()),
@@ -138,10 +162,20 @@ mod imp {
             ..Default::default()
         };
         let mut result = 0i32;
-        // SAFETY: config and every string/button it points to outlive the call.
+        // SAFETY: config and every string/button/icon it points to outlive the call.
         unsafe { TaskDialogIndirect(&config, Some(&mut result), None, None) }
             .context("TaskDialogIndirect")?;
         Ok(chosen(model, result).map(str::to_string))
+    }
+
+    /// An icon this process loaded, destroyed when dropped.
+    struct OwnedIcon(HICON);
+
+    impl Drop for OwnedIcon {
+        fn drop(&mut self) {
+            // SAFETY: the icon came from LoadIconMetric, which hands ownership to the caller.
+            let _ = unsafe { DestroyIcon(self.0) };
+        }
     }
 
     /// Bring the new dialog to the user's attention: it may have been started in the background.
@@ -243,6 +277,28 @@ mod tests {
         assert_eq!(chosen(&m, BUTTON_BASE + 2), None);
         assert_eq!(chosen(&m, 2), None); // IDCANCEL
         assert_eq!(chosen(&m, 8), None); // IDCLOSE
+    }
+
+    #[test]
+    fn stock_icon_beats_scenario() {
+        let icon = |extra: &str| {
+            let json =
+                format!(r#"{{"title": "t", "buttons": [{{"id": "a", "label": "A"}}]{extra}}}"#);
+            model(&Spec::parse(&json).unwrap()).icon
+        };
+        assert_eq!(
+            icon(r#", "icon": "info", "scenario": "alarm""#),
+            Icon::Information
+        );
+        assert_eq!(icon(r#", "icon": "warning""#), Icon::Warning);
+        assert_eq!(icon(r#", "icon": "error""#), Icon::Error);
+        assert_eq!(icon(r#", "icon": "question""#), Icon::Question);
+        // an image path keeps the scenario's icon
+        assert_eq!(
+            icon(r#", "icon": "C:\\i.png", "scenario": "urgent""#),
+            Icon::Warning
+        );
+        assert_eq!(icon(r#", "icon": "C:\\i.png""#), Icon::Information);
     }
 
     #[test]

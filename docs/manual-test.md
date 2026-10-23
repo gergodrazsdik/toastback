@@ -36,6 +36,9 @@ covered by the smoke job, so here they only need to be checked once.
     opens `%LOCALAPPDATA%\toastback` in Explorer.
 15. `toastback examples/alarm.json`: the toast stays on screen with a looping sound until a button is chosen.
 16. Text: `toastback -t "őű 🔔" -m "Ünïcödé ✓"` displays correctly.
+38. `toastback examples/status-icons.json` shows the amber warning triangle as the logo. Then
+    `for i in info warning error question; do toastback -i $i -t $i; done`: each toast shows its icon, sharp, in
+    both the light and the dark Windows theme.
 
 ## Dialogs
 
@@ -44,6 +47,10 @@ covered by the smoke job, so here they only need to be checked once.
     shows `pretend reboot: now`.
 18. `toastback --mode dialog -t "Close me"` shows a dialog with a Close button. Esc logs `dialog_closed … (closed)`
     and runs no callback.
+39. `for i in info warning error question; do toastback --mode dialog -i $i -t $i; done` opens four dialogs with the
+    information, warning, error and question icons (the question icon is sharp at 150 % scaling too). Warning and
+    error play their system sounds. `toastback --mode dialog -i res/icon.png -t path` shows the
+    information icon.
 
 ## Commands
 

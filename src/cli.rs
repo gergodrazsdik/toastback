@@ -153,7 +153,7 @@ pub struct ShowArgs {
     /// Details, shown in a dialog when the toast body is clicked
     #[arg(short = 'd', long)]
     pub details: Option<String>,
-    /// Icon (PNG/JPG; Windows or WSL path)
+    /// Icon: info, warning, error, question, or a PNG/JPG (Windows or WSL path)
     #[arg(short = 'i', long)]
     pub icon: Option<String>,
     #[arg(long, value_enum)]

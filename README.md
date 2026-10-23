@@ -137,7 +137,7 @@ console window.
   "title": "Deploy to production?", // required
   "body": "Build 1234 passed all checks.",
   "details": "Long text…",          // shown in a dialog when the toast body is clicked
-  "icon": "/home/g/icons/rocket.png",   // PNG/JPG, WSL or Windows path (copied to a cache)
+  "icon": "/home/g/icons/rocket.png",   // info | warning | error | question, or a PNG/JPG, WSL or Windows path (copied to a cache)
   "image": null,                    // larger inline image
   "attribution": "CI",              // small grey line
   "scenario": "default",            // default | reminder | alarm | urgent (reminder/alarm stay on screen; need a button)
@@ -162,6 +162,10 @@ removed, and later clicks (also while its callback still runs) are ignored and l
 the notification center for 3 days at most, so a longer `expires` only matters for dialogs. A choice in a dialog
 that opened before `expires` still counts for up to a day after it. Ids that Windows
 reserves as device names (`CON`, `NUL`, `COM1`, …) are refused.
+
+**Built-in icons:** `icon` can name one instead of an image file: `info`, `warning`, `error` or `question` (exact
+lowercase; for a file called `warning`, write `./warning`). Toasts show toastback's own PNG of it as the logo, and
+dialogs show the Windows icon. From the command line: `toastback -i error -t "Build failed"`.
 
 ### Callbacks (`run`)
 
@@ -207,7 +211,7 @@ don't control (a script's output, an issue title, a file name), keep it a value,
 
 ### Examples
 
-[examples/](examples/) has one spec per feature: `simple`, `images`, `deploy` (buttons, details, data),
+[examples/](examples/) has one spec per feature: `simple`, `images`, `status-icons`, `deploy` (buttons, details, data),
 `default-handler`, `alarm`, `reboot-dialog` (dialog mode), `feedback` (done/failed toasts), `wsl-options`
 (argv, env, cwd, timeout) and `windows-callbacks` (cmd, PowerShell, exe, open). Run them from the repository
 root: `just demo`, or `toastback examples/<name>.json`.
@@ -229,7 +233,8 @@ root: `just demo`, or `toastback examples/<name>.json`.
   exceptions. Without it, a browser download may still trigger SmartScreen on first run. `install` writes a fresh
   copy, so clicks don't trigger "downloaded from the internet" prompts; `install.sh` downloads with curl, which sets
   no download marker at all.
-- Dialogs show the built-in information/warning icons, not a custom `icon`.
+- Dialogs show only the built-in icons (`info`, `warning`, `error`, `question`), not an image file. With an image
+  `icon` or none, a dialog shows the warning icon for `alarm`/`urgent` and the information icon otherwise.
 
 ## Troubleshooting
 

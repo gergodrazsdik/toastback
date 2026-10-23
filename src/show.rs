@@ -176,7 +176,16 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
             })
             .transpose()
     };
-    let icon_path = cache(store::ICON, &spec.icon).map_err(invalid)?;
+    let icon_path = match spec.stock_icon() {
+        Some(stock) => Some(
+            store
+                .cache_bytes(&id, store::ICON, "png", stock.png())
+                .map_err(failed)?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        None => cache(store::ICON, &spec.icon).map_err(invalid)?,
+    };
     let image_path = cache(store::IMAGE, &spec.image).map_err(invalid)?;
 
     let now = unix_now();
@@ -225,7 +234,8 @@ pub fn validate_file(file: &str, ctx: &Context) -> Result<()> {
         ..Default::default()
     };
     let spec = load_spec(&args, ctx)?;
-    for (kind, path) in [("icon", &spec.icon), ("image", &spec.image)] {
+    let icon = spec.icon.as_ref().filter(|_| spec.stock_icon().is_none());
+    for (kind, path) in [("icon", icon), ("image", spec.image.as_ref())] {
         if let Some(p) = path {
             let win = context::to_windows_path(p, &spec.context).context(kind)?;
             std::fs::metadata(&win).with_context(|| format!("{kind}: cannot read {win}"))?;

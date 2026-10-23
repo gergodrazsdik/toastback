@@ -1,0 +1,6 @@
+{
+  "title": "Disk almost full",
+  "body": "C: has 3 GB left. Built-in icons: info, warning, error, question.",
+  "icon": "warning",
+  "attribution": "disk check"
+}

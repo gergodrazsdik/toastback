@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Render the placeholder icon: res/icon.svg -> res/icon.png (256 px) + res/icon.ico (multi-size).
+# Render the placeholder icon: res/icon.svg -> res/icon.png (256 px) + res/icon.ico (multi-size),
+# and the stock toast icons: res/status/<name>.svg -> res/status/<name>.png (96 px: the 48 px
+# toast logo at 200 % scaling).
 # Needs resvg and ImageMagick (`magick`).
 set -euo pipefail
 cd "$(dirname "$0")/../res"
 resvg -w 256 -h 256 icon.svg icon.png
 magick icon.png -define icon:auto-resize=256,64,48,32,24,16 icon.ico
+for svg in status/*.svg; do
+    resvg -w 96 -h 96 "$svg" "${svg%.svg}.png"
+done

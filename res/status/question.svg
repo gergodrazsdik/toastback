@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- stock icon "question": white ? on a blue circle -->
+  <circle cx="32" cy="32" r="30" fill="#0067C0"/>
+  <path d="M23.5 24a8.5 8.5 0 1 1 12.5 7.5c-2.6 1.4-4 3-4 6v2" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="32" cy="49" r="4.5" fill="#fff"/>
+</svg>
