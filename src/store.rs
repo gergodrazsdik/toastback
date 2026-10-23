@@ -309,6 +309,11 @@ impl Store {
             .filter(|e| !e.is_empty())
             .map(str::to_ascii_lowercase)
             .unwrap_or_else(|| "png".into());
+        self.cache_bytes(id, kind, &ext, &bytes)
+    }
+
+    /// Write image bytes into the cache as `<id>-<kind>.<ext>`, returning the file's path.
+    pub fn cache_bytes(&self, id: &str, kind: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf> {
         fs::create_dir_all(self.cache_dir())?;
         let dest = self.cache_dir().join(format!("{id}-{kind}.{ext}"));
         fs::write(&dest, bytes).with_context(|| format!("write {}", dest.display()))?;

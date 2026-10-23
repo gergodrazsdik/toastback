@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Built-in icons: `icon` (and `-i`) accepts `info`, `warning`, `error` or `question` instead of an image path.
+  Toasts show a bundled PNG as the logo; dialogs show the matching Windows icon, which also brings the error and
+  question icons to dialogs.
+
 ## [1.1.0] - 2026-10-14
 
 ### Changed

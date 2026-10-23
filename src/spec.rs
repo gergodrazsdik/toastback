@@ -70,6 +70,43 @@ pub enum Sound {
     Reminder,
 }
 
+/// A built-in icon that `icon` can name instead of an image path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StockIcon {
+    Info,
+    Warning,
+    Error,
+    Question,
+}
+
+impl StockIcon {
+    pub const ALL: [StockIcon; 4] = [Self::Info, Self::Warning, Self::Error, Self::Question];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+            Self::Question => "question",
+        }
+    }
+
+    /// Exact lowercase names only: anything else is an image path.
+    pub fn from_name(s: &str) -> Option<StockIcon> {
+        Self::ALL.into_iter().find(|i| i.name() == s)
+    }
+
+    /// The toast logo, rendered from `res/status/<name>.svg` by `scripts/make-icon.sh`.
+    pub fn png(self) -> &'static [u8] {
+        match self {
+            Self::Info => include_bytes!("../res/status/info.png"),
+            Self::Warning => include_bytes!("../res/status/warning.png"),
+            Self::Error => include_bytes!("../res/status/error.png"),
+            Self::Question => include_bytes!("../res/status/question.png"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OnClick {
@@ -287,6 +324,11 @@ impl Spec {
         self.notify_on_success.unwrap_or(false)
     }
 
+    /// The built-in icon `icon` names, if it isn't an image path.
+    pub fn stock_icon(&self) -> Option<StockIcon> {
+        self.icon.as_deref().and_then(StockIcon::from_name)
+    }
+
     pub fn button(&self, id: &str) -> Option<&Button> {
         self.buttons.iter().find(|b| b.id == id)
     }
@@ -476,6 +518,26 @@ mod tests {
         assert_eq!(s.body_click(), OnClick::None);
         assert!(s.notify_on_error());
         assert!(!s.notify_on_success());
+    }
+
+    #[test]
+    fn stock_icons_and_paths() {
+        for i in StockIcon::ALL {
+            let s = spec(&format!(r#"{{"title": "x", "icon": "{}"}}"#, i.name()));
+            assert_eq!(s.stock_icon(), Some(i));
+            assert!(i.png().starts_with(b"\x89PNG"));
+        }
+        for path in [
+            "Warning",
+            "./warning",
+            "warning.png",
+            "C:\\icons\\error",
+            " info",
+        ] {
+            let s = spec(&format!(r#"{{"title": "x", "icon": {path:?}}}"#));
+            assert_eq!(s.stock_icon(), None, "{path} is a path");
+        }
+        assert_eq!(spec(r#"{"title": "x"}"#).stock_icon(), None);
     }
 
     #[test]
