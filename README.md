@@ -9,7 +9,7 @@ on **Windows**.
 
 ```bash
 toastback -t "Backup finished" -m "42 GB in 12 min"      # simple alert, prints the notification id
-toastback examples/deploy.json                           # buttons that run commands
+toastback examples deploy | toastback                    # buttons that run commands
 id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
 ```
 
@@ -88,6 +88,7 @@ Other commands:
 
 | Command | What it does |
 |---|---|
+| `toastback examples [NAME]` | list the built-in example specs, or print one (`> my.json` to start your own) |
 | `toastback log [-n N] [--id ID]` | recent events: shown, clicked, callback output and exit codes |
 | `toastback validate FILE...` | check specs (and their images) without showing them; exit 2 if any is invalid |
 | `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
@@ -211,10 +212,16 @@ don't control (a script's output, an issue title, a file name), keep it a value,
 
 ### Examples
 
-[examples/](examples/) has one spec per feature: `simple`, `images`, `status-icons`, `deploy` (buttons, details, data),
-`default-handler`, `alarm`, `reboot-dialog` (dialog mode), `feedback` (done/failed toasts), `wsl-options`
-(argv, env, cwd, timeout) and `windows-callbacks` (cmd, PowerShell, exe, open). Run them from the repository
-root: `just demo`, or `toastback examples/<name>.json`.
+`toastback examples` lists the built-in examples, ready to copy and adapt: `simple`, `warning` (built-in icons),
+`build` (open the log, re-run, replace by id), `deploy` (details, data, a WSL callback), `export` (Windows-side
+callbacks), `reboot-dialog` (dialog mode) and `alarm`. Print one with `toastback examples NAME > my.json`, or show
+it with `toastback examples NAME | toastback`. Callback output doesn't appear anywhere on screen: read it with
+`toastback log`, or set `notify_on_success`.
+
+[examples/](examples/) holds the same specs plus a few that need the repository or cover single features:
+`images`, `default-handler`, `feedback` (done/failed toasts), `wsl-options` (argv, env, cwd, timeout) and
+`windows-callbacks` (cmd, PowerShell, exe, open). Run them from the repository root: `just demo`, or
+`toastback examples/<name>.json`.
 
 ## Limitations
 

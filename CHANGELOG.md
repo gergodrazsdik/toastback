@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Built-in icons: `icon` (and `-i`) accepts `info`, `warning`, `error` or `question` instead of an image path.
   Toasts show a bundled PNG as the logo; dialogs show the matching Windows icon, which also brings the error and
   question icons to dialogs.
+- `toastback examples [NAME]` lists built-in example specs or prints one, so they're available without the
+  repository: `simple`, `warning`, `build`, `deploy`, `export`, `reboot-dialog`, `alarm`. `--help` shows a few
+  one-line examples.
+
+### Changed
+
+- The examples read as real use cases: `deploy` runs an inline command instead of `examples/deploy.sh` (removed),
+  `reboot-dialog` asks with the question icon and re-shows itself on "Remind me later", and `alarm` snoozes with
+  `toastback examples alarm`, so it works outside the repository.
 
 ## [1.1.0] - 2026-10-14
 

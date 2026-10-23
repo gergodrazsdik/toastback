@@ -34,7 +34,7 @@ run *args: build
 check:
     cargo fmt --check
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
-    shellcheck scripts/*.sh examples/*.sh
+    shellcheck scripts/*.sh
     shellcheck -s bash res/shim.sh.tmpl
     yamllint -s .github .yamllint
     actionlint

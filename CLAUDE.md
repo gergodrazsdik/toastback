@@ -28,5 +28,5 @@ The plan is `PLAN.md`: §2 holds the locked decisions, §10 the milestones, §13
 - Keep `CHANGELOG.md` current ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)): every user-visible change
   adds a line under `[Unreleased]` in the same PR. Versions follow semver; release with `just bump X.Y.Z` (PR), then
   `just release X.Y.Z` after it's merged. See `docs/decisions/005-github.md`.
-- New spec fields or commands: update README.md, add or extend an example in `examples/`, and add a step to `docs/manual-test.md`.
+- New spec fields or commands: update README.md, add or extend an example in `examples/` (registered in `src/examples.rs` as built-in or repo-only), and add a step to `docs/manual-test.md`.
 - After each milestone: `just check && just test && just install`, then give the user the manual steps for the acceptance criteria.

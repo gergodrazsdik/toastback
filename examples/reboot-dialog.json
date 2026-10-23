@@ -3,12 +3,12 @@
   "title": "Reboot needed",
   "body": "Updates are installed. Reboot now?",
   "details": "Save your work first. The reboot takes about 2 minutes.",
-  "scenario": "alarm",
+  "icon": "question",
   "buttons": [
     { "id": "now", "label": "Reboot now",
-      "run": { "wsl": "echo \"pretend reboot: $TOASTBACK_ACTION\"" } },
+      "run": { "wsl": "toastback -t 'Pretend reboot' -m 'Replace this with your reboot command, e.g. shutdown.exe /r /t 60'" } },
     { "id": "later", "label": "Remind me later",
-      "run": { "wsl": "echo snoozed" } },
+      "run": { "wsl": "sleep 3600 && toastback examples reboot-dialog | toastback", "timeout": "2h" } },
     { "id": "never", "label": "Skip this time" }
   ]
 }

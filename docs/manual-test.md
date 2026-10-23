@@ -17,10 +17,11 @@ covered by the smoke job, so here they only need to be checked once.
 5. `toastback examples/simple.json` shows a toast with title, body and attribution. Nothing happens on click.
 6. `toastback examples/images.json` shows the bell as the app logo and as an inline image.
 7. `toastback examples/deploy.json`, then click **Deploy**.
-   - The log shows `callback_finished … deploy exit 0` with the distro, user and repo cwd, and `data={"build":1234}`.
+   - A "Deploy: done" toast appears. The log shows `callback_finished … deploy exit 0` with the distro, user and
+     repo cwd, and `data={"build":1234}`.
 8. The same, but let the toast time out, then expand it in the notification center (Win+N) and click **Deploy**.
    - Same result.
-9. `toastback examples/deploy.json`, then click **Open logs**: the GitHub page opens. Show it again and click **Not now**:
+9. `toastback examples/deploy.json`, then click **Open logs**: the browser opens `ci.example.com`. Show it again and click **Not now**:
    the toast closes and nothing is logged.
 10. `toastback examples/deploy.json`, then click the toast **body**: the details dialog opens with the same buttons.
     Pick **Deploy** and it runs.
@@ -36,15 +37,15 @@ covered by the smoke job, so here they only need to be checked once.
     opens `%LOCALAPPDATA%\toastback` in Explorer.
 15. `toastback examples/alarm.json`: the toast stays on screen with a looping sound until a button is chosen.
 16. Text: `toastback -t "őű 🔔" -m "Ünïcödé ✓"` displays correctly.
-38. `toastback examples/status-icons.json` shows the amber warning triangle as the logo. Then
+38. `toastback examples/warning.json` shows the amber warning triangle as the logo. Then
     `for i in info warning error question; do toastback -i $i -t $i; done`: each toast shows its icon, sharp, in
     both the light and the dark Windows theme.
 
 ## Dialogs
 
-17. `toastback examples/reboot-dialog.json` returns at once, and the dialog appears on top with the warning icon and
-    three command links. Click into another window first: the dialog stays on top. Pick **Reboot now**, and the log
-    shows `pretend reboot: now`.
+17. `toastback examples/reboot-dialog.json` returns at once, and the dialog appears on top with the question icon and
+    three command links. Click into another window first: the dialog stays on top. Pick **Reboot now**, and a
+    "Pretend reboot" toast appears.
 18. `toastback --mode dialog -t "Close me"` shows a dialog with a Close button. Esc logs `dialog_closed … (closed)`
     and runs no callback.
 39. `for i in info warning error question; do toastback --mode dialog -i $i -t $i; done` opens four dialogs with the
@@ -56,6 +57,10 @@ covered by the smoke job, so here they only need to be checked once.
 
 19. `toastback validate examples/*.json`: all `ok`. `echo '{"title":"x","scenario":"alarm"}' | toastback validate -`
     gives FAIL, exit 2. **(CI)**
+40. `toastback examples` lists seven examples with descriptions. `toastback examples build | toastback` shows the
+    "Build failed" toast with the error icon; run it again and the new toast replaces the first. Click **Re-run**: a
+    "Re-run: done" toast after about 3 s. `toastback examples export | toastback`, then **Copy path**: the clipboard
+    holds the Downloads path, and a "Copy path: done" toast appears. `toastback examples nope` lists the names and exits 2.
 20. `id=$(toastback -t "remove me")`, then `toastback remove $id`: the toast disappears from the notification
     center. `toastback remove nope` exits 1.
 21. Show two toasts, then `toastback clear`: both disappear, and the count is printed.
