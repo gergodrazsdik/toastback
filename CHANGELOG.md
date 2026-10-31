@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- winget package `Gergo.Drazsdik.Toastback` (from this version on), which installs, upgrades and uninstalls toastback
+- winget package `GergoDrazsdik.Toastback` (from this version on), which installs, upgrades and uninstalls toastback
   including its WSL shim.
 - `install --wsl default` writes the shim to the default WSL distro only.
 - `install --quiet` skips the test notification.

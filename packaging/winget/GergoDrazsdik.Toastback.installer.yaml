@@ -2,7 +2,7 @@
 # Template for scripts/winget.sh. winget unpacks the release zip and runs `toastback-cli.exe install`, which installs
 # from the extracted folder to %LOCALAPPDATA%\toastback\bin and writes the Apps & Features entry that winget upgrades
 # and uninstalls by. Why not a portable package: docs/decisions/006-winget.md.
-PackageIdentifier: Gergo.Drazsdik.Toastback
+PackageIdentifier: GergoDrazsdik.Toastback
 PackageVersion: __VERSION__
 MinimumOSVersion: 10.0.19045.0
 InstallerType: zip

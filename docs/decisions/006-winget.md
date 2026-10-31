@@ -2,7 +2,7 @@
 
 Date: 2026-10-31. Takes winget out of PLAN.md §2's "out of scope".
 
-**Package:** `Gergo.Drazsdik.Toastback`, publisher `Gergő Drazsdik`.
+**Package:** `GergoDrazsdik.Toastback`, publisher `Gergő Drazsdik`.
 
 ## Zip with a nested exe, not a portable package
 

@@ -43,11 +43,11 @@ shim and shows a test notification. `toastback doctor` checks everything.
 ### winget
 
 ```powershell
-winget install Gergo.Drazsdik.Toastback
+winget install GergoDrazsdik.Toastback
 ```
 
-Then open a new terminal, so that it sees the new PATH. Upgrade with `winget upgrade Gergo.Drazsdik.Toastback`, which
-refreshes the shims you already have, and remove it with `winget uninstall Gergo.Drazsdik.Toastback`. winget's
+Then open a new terminal, so that it sees the new PATH. Upgrade with `winget upgrade GergoDrazsdik.Toastback`, which
+refreshes the shims you already have, and remove it with `winget uninstall GergoDrazsdik.Toastback`. winget's
 install shows no test notification; try `toastback-cli -t hello` instead.
 
 ### From WSL: `install.sh`

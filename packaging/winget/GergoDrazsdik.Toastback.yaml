@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
 # Template for scripts/winget.sh: __VERSION__ and the like are filled in per release.
-PackageIdentifier: Gergo.Drazsdik.Toastback
+PackageIdentifier: GergoDrazsdik.Toastback
 PackageVersion: __VERSION__
 DefaultLocale: en-US
 ManifestType: version

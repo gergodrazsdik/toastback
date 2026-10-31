@@ -11,7 +11,7 @@
 #   scripts/winget.sh update VERSION     # open a winget-pkgs PR for a new version
 set -euo pipefail
 
-id=Gergo.Drazsdik.Toastback
+id=GergoDrazsdik.Toastback
 repo=https://github.com/gergodrazsdik/toastback
 templates=packaging/winget
 port=8735
