@@ -37,6 +37,12 @@ pub struct Images<'a> {
     pub image: Option<&'a str>,
 }
 
+/// The toast's tag. Windows compares tags exactly, while file names ignore case: `Deploy` and
+/// `deploy` share one pending file, so they have to be one toast too.
+pub fn tag(id: &str) -> String {
+    id.to_ascii_lowercase()
+}
+
 /// Build the toast XML. Every piece of user text goes through [`escape`].
 pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String {
     let mut x = String::from("<toast");
@@ -125,7 +131,7 @@ mod imp {
     };
     use windows::core::{HSTRING, Interface as _};
 
-    use super::{AUMID, GROUP};
+    use super::{AUMID, GROUP, tag};
 
     /// Seconds between 1601-01-01 (Windows epoch) and 1970-01-01.
     const EPOCH_DIFF: i64 = 11_644_473_600;
@@ -135,7 +141,7 @@ mod imp {
         doc.LoadXml(&HSTRING::from(xml))
             .context("toast XML rejected")?;
         let toast = ToastNotification::CreateToastNotification(&doc)?;
-        toast.SetTag(&HSTRING::from(id))?;
+        toast.SetTag(&HSTRING::from(tag(id)))?;
         toast.SetGroup(&HSTRING::from(GROUP))?;
         let ticks = (expires_at_unix as i64 + EPOCH_DIFF) * 10_000_000;
         let expiry: IReference<DateTime> = PropertyValue::CreateDateTime(DateTime {
@@ -152,7 +158,7 @@ mod imp {
     /// Remove one toast from Action Center. Missing toasts are fine.
     pub fn remove(id: &str) -> Result<()> {
         ToastNotificationManager::History()?.RemoveGroupedTagWithId(
-            &HSTRING::from(id),
+            &HSTRING::from(tag(id)),
             &HSTRING::from(GROUP),
             &HSTRING::from(AUMID),
         )?;
@@ -180,6 +186,12 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ids_differing_in_case_share_a_tag() {
+        assert_eq!(tag("Deploy"), tag("deploy"));
+        assert_eq!(tag("mvwuj41y-z9zl"), "mvwuj41y-z9zl");
+    }
 
     #[test]
     fn escape_drops_what_xml_forbids() {
