@@ -30,8 +30,12 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
     };
     match install::is_installed(store) {
         Ok(true) => {}
-        _ => {
+        Ok(false) => {
             errln!("toastback: not installed; run `toastback.exe install` first");
+            return EXIT_NOT_INSTALLED;
+        }
+        Err(e) => {
+            errln!("toastback: {e:#}; run `toastback.exe install` to repair it");
             return EXIT_NOT_INSTALLED;
         }
     }

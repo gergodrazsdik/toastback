@@ -112,7 +112,8 @@ covered by the smoke job, so here they only need to be checked once.
 38. **Whole cycle:** `just winget-test` passes: install through winget, `doctor`, uninstall, nothing left behind.
 39. **Default distro:** with two distros, a first `toastback-cli install` from PowerShell writes the shim only to the
     one marked `*` in `wsl -l -v`. `--wsl all` skips `docker-desktop*` with a note.
-40. **Upgrade keeps the choice:** after `install --wsl none`, a re-run without `--wsl` writes no shim. After adding a second
+40. **Upgrade keeps the choice:** after `install --wsl none`, the shim is gone and a re-run without `--wsl` writes none.
+    `install --wsl Typo` fails with the list of distros and changes nothing. After adding a second
     distro with `--wsl NAME`, a re-run without `--wsl` from PowerShell refreshes both shims.
 41. **Upgrade through winget:** with a lower version installed from a local manifest, `winget upgrade --manifest` installs
     the new one; `doctor` and Apps & Features show the new version, and a callback still runs.

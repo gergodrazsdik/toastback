@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result, ensure};
 
 use crate::context::same_distro;
 use crate::spec::Context;
-use crate::store::ShimTarget;
+use crate::store::{InstallRecord, ShimTarget};
 
 const SHIM_TEMPLATE: &str = include_str!("../res/shim.sh.tmpl");
 /// First-line marker: `uninstall` only deletes files that carry it.
@@ -77,12 +77,13 @@ pub struct ShimPlan {
 
 /// Where `install --wsl <wsl>` writes the shim. The calling distro always gets the calling user
 /// (with `all` too); other distros get their default user. Without `--wsl`: the calling distro,
-/// else what the install record lists (an upgrade keeps the user's choice), else the default
-/// distro. `recorded` is `None` on a first install. `list` and `default` run only when needed.
+/// else what the install record lists (an upgrade keeps the user's choice, `--wsl none` too), else
+/// the default distro. A named distro must exist. `recorded` is `None` on a first install. `list`
+/// and `default` run only when needed.
 pub fn shim_targets(
     wsl: Option<&str>,
     ctx: &Context,
-    recorded: Option<&[ShimTarget]>,
+    recorded: Option<&InstallRecord>,
     list: impl FnOnce() -> Result<Vec<String>>,
     default: impl FnOnce() -> Result<Option<String>>,
 ) -> Result<ShimPlan> {
@@ -117,18 +118,33 @@ pub fn shim_targets(
             }
         }
         (Some("default"), ..) => one(default_target()?),
-        (Some(d), ..) => one(target(d.into())),
-        (None, Some(d), _) => one(target(d.clone())),
-        (None, None, Some([])) => ShimPlan::default(),
-        (None, None, Some(recorded)) => {
+        (Some(d), ..) => {
             let existing = list()?;
-            ShimPlan {
-                targets: recorded
-                    .iter()
-                    .filter(|t| has_distro(&existing, &t.distro))
-                    .cloned()
-                    .collect(),
-                skipped: Vec::new(),
+            ensure!(
+                has_distro(&existing, d),
+                "no WSL distro named {d} (there are: {})",
+                existing.join(", ")
+            );
+            one(target(d.into()))
+        }
+        (None, Some(d), _) => one(target(d.clone())),
+        (None, None, Some(r)) if r.shims_declined() => ShimPlan::default(),
+        (None, None, Some(r)) => {
+            let existing = list()?;
+            let targets: Vec<ShimTarget> = r
+                .shims
+                .iter()
+                .filter(|t| has_distro(&existing, &t.distro))
+                .cloned()
+                .collect();
+            if targets.is_empty() {
+                // nothing recorded worked out (a first install without WSL, removed distros)
+                one(default_target()?)
+            } else {
+                ShimPlan {
+                    targets,
+                    skipped: Vec::new(),
+                }
             }
         }
         (None, None, None) => one(default_target()?),
@@ -189,6 +205,7 @@ mod imp {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
         QueryFullProcessImageNameW,
@@ -203,9 +220,10 @@ mod imp {
         parse_distro_list, path_with, path_without, protocol_command, render_shim, same_distro,
         uninstall_command,
     };
+    use crate::exec::{Drain, OUTPUT_GRACE};
     use crate::registry::{self, Kind};
     use crate::spec::Context;
-    use crate::store::{ShimTarget, Store, timestamp};
+    use crate::store::{InstallRecord, ShimTarget, Store, timestamp};
 
     use crate::toast::{self, AUMID};
 
@@ -238,16 +256,11 @@ mod imp {
             Ok(d) => Ok(d.clone()),
             Err(e) => Err(anyhow!("{e:#}")),
         };
-        let previous = store.install_record()?;
+        let previous = readable_record(store);
+        let previously_declined = previous.as_ref().is_some_and(InstallRecord::shims_declined);
         // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
         // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
-        let plan = super::shim_targets(
-            opts.wsl,
-            ctx,
-            previous.as_ref().map(|r| r.shims.as_slice()),
-            listed,
-            default_distro,
-        );
+        let plan = super::shim_targets(opts.wsl, ctx, previous.as_ref(), listed, default_distro);
         let plan = match plan {
             Ok(p) => p,
             Err(e) if opts.wsl.is_none() => {
@@ -274,8 +287,15 @@ mod imp {
         let exe = store.installed_exe();
         copy_exe(&gui, &exe)?;
         let cli = src_dir.join(CLI_EXE);
+        let installed_cli = store.bin_dir().join(CLI_EXE);
         if cli.exists() {
-            copy_exe(&cli, &store.bin_dir().join(CLI_EXE))?;
+            copy_exe(&cli, &installed_cli)?;
+        } else if installed_cli.exists() {
+            errln!(
+                "warning: {CLI_EXE} isn't next to {}, so the one in {} keeps its old version",
+                me.display(),
+                store.bin_dir().display()
+            );
         }
         outln!(
             "installed {} (written fresh, so no \"downloaded from the internet\" marker carries over)",
@@ -311,13 +331,25 @@ mod imp {
                     "added {} to your user PATH (new terminals see it)",
                     store.bin_dir().display()
                 );
+                // only an entry we added is ours to remove on uninstall
+                record.path_added = true;
             } else {
                 outln!("{} is already on your user PATH", store.bin_dir().display());
             }
-            record.path_added = true;
         }
 
+        record.no_shims = Some(match opts.wsl {
+            Some("none") => {
+                // a shim that can't be removed now stays listed, so uninstall still tries it
+                record.shims.retain(|t| !remove_shim(t));
+                true
+            }
+            _ if !targets.is_empty() => false,
+            _ => previously_declined,
+        });
+
         let shim = render_shim(version, &exe.to_string_lossy());
+        let mut failed = Vec::new();
         for t in &targets {
             match write_shim(t, &shim) {
                 Ok(()) => {
@@ -327,14 +359,32 @@ mod imp {
                         .retain(|r| !(same_distro(&r.distro, &t.distro) && r.user == t.user));
                     record.shims.push(t.clone());
                 }
-                Err(e) => errln!("warning: shim for {}: {e:#}", t.distro),
+                Err(e) => {
+                    errln!("warning: shim for {}: {e:#}", t.distro);
+                    failed.push(t.distro.as_str());
+                }
             }
         }
         record.version = version.into();
         record.installed_at = timestamp(std::time::SystemTime::now());
         record.exe = exe.to_string_lossy().into_owned();
         store.save_install_record(&record)?;
+        // asked for by name, it's a failure; on its own (an upgrade) a warning, like no WSL at all
+        ensure!(
+            opts.wsl.is_none() || failed.is_empty(),
+            "no WSL shim written to {}",
+            failed.join(", ")
+        );
         Ok(())
+    }
+
+    /// The install record, or `None` with a warning if it can't be read: install and uninstall are
+    /// the way out of a damaged one, so it must not stop them.
+    fn readable_record(store: &Store) -> Option<InstallRecord> {
+        store.install_record().unwrap_or_else(|e| {
+            errln!("warning: ignoring the install record: {e:#}");
+            None
+        })
     }
 
     /// The entry winget and Apps & Features use to see the version and to uninstall.
@@ -368,28 +418,48 @@ mod imp {
         registry::set_dword(APP_KEY, "EstimatedSize", kb)
     }
 
-    /// `*.old-<pid>` files left over from replacing an exe that was running.
+    /// `*.old-<pid>` and `*.new-<pid>` files left over from replacing an exe.
     fn remove_stale_copies(bin: &Path) {
         for entry in fs::read_dir(bin).into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().contains(".exe.old") {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains(".exe.old") || name.contains(".exe.new") {
                 let _ = fs::remove_file(entry.path());
             }
         }
     }
 
-    /// Copy an exe as fresh bytes, so the download marker (Zone.Identifier) doesn't come along.
-    fn copy_exe(src: &Path, dest: &Path) -> Result<()> {
+    /// Copy an exe as fresh bytes, so the download marker (Zone.Identifier) doesn't come along. The
+    /// old exe stays in place until the new one is complete: clicks and the shim depend on it.
+    pub(super) fn copy_exe(src: &Path, dest: &Path) -> Result<()> {
         if dest.exists() && fs::canonicalize(src)? == fs::canonicalize(dest)? {
             return Ok(()); // installing from the installed copy
         }
         let bytes = fs::read(src).with_context(|| format!("read {}", src.display()))?;
-        if dest.exists() && fs::remove_file(dest).is_err() {
-            // in use (a callback is running): a running exe can be renamed, not deleted
-            let old = dest.with_extension(format!("exe.old-{}", std::process::id()));
-            fs::rename(dest, &old)
-                .with_context(|| format!("move the running {} aside", dest.display()))?;
+        let pid = std::process::id();
+        let new = dest.with_extension(format!("exe.new-{pid}"));
+        let replaced = fs::write(&new, bytes)
+            .with_context(|| format!("write {}", new.display()))
+            .and_then(|()| replace_exe(&new, dest, pid));
+        if replaced.is_err() {
+            let _ = fs::remove_file(&new);
         }
-        fs::write(dest, bytes).with_context(|| format!("write {}", dest.display()))
+        replaced
+    }
+
+    /// Put the finished `new` in `dest`'s place.
+    fn replace_exe(new: &Path, dest: &Path, pid: u32) -> Result<()> {
+        if fs::rename(new, dest).is_ok() {
+            return Ok(());
+        }
+        // in use (a callback is running): a running exe can be renamed, not replaced
+        let old = dest.with_extension(format!("exe.old-{pid}"));
+        fs::rename(dest, &old)
+            .with_context(|| format!("move the running {} aside", dest.display()))?;
+        fs::rename(new, dest).map_err(|e| {
+            let _ = fs::rename(&old, dest);
+            anyhow!(e).context(format!("replace {}", dest.display()))
+        })
     }
 
     /// Append `dir` to the user PATH. Returns false if it was there already.
@@ -432,20 +502,24 @@ mod imp {
         }
     }
 
+    /// A program in System32, by full path. A bare name would look in the running exe's folder
+    /// first: a `wsl.exe` planted in Downloads would run when `install` is started from there.
+    pub(super) fn system_exe(name: &str) -> Result<PathBuf> {
+        let mut dir = [0u16; 260];
+        // SAFETY: the slice is a local buffer, and the call writes within its length.
+        let len = unsafe { GetSystemDirectoryW(Some(&mut dir)) } as usize;
+        ensure!(
+            len > 0 && len < dir.len(),
+            "can't find the system directory"
+        );
+        Ok(PathBuf::from(String::from_utf16_lossy(&dir[..len])).join(name))
+    }
+
     /// Wait for a child with piped stdout and stderr, and kill it after `limit`.
     pub(super) fn wait_limited(mut child: Child, limit: Duration, what: &str) -> Result<Output> {
-        fn drain(
-            pipe: Option<impl std::io::Read + Send + 'static>,
-        ) -> std::thread::JoinHandle<Vec<u8>> {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                if let Some(mut pipe) = pipe {
-                    let _ = pipe.read_to_end(&mut buf);
-                }
-                buf
-            })
-        }
-        let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+        let piped = "the child's output isn't piped";
+        let stdout = Drain::start(child.stdout.take().context(piped)?, usize::MAX);
+        let stderr = Drain::start(child.stderr.take().context(piped)?, usize::MAX);
         let start = Instant::now();
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -454,22 +528,24 @@ mod imp {
             if start.elapsed() >= limit {
                 let _ = child.kill();
                 let _ = child.wait();
-                // not joining the readers: whatever the child started may still hold the pipes
+                // not waiting for the readers: whatever the child started may still hold the pipes
                 bail!("{what}: no answer after {} s", limit.as_secs());
             }
             std::thread::sleep(Duration::from_millis(50));
         };
+        // the same goes after a normal exit
+        let deadline = Instant::now() + OUTPUT_GRACE;
         Ok(Output {
             status,
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
+            stdout: stdout.collect_bytes(deadline),
+            stderr: stderr.collect_bytes(deadline),
         })
     }
 
     /// Stdout of `wsl.exe <args>`.
     fn wsl_list(args: &[&str]) -> Result<Vec<u8>> {
         let what = format!("wsl.exe {}", args.join(" "));
-        let child = Command::new("wsl.exe")
+        let child = Command::new(system_exe("wsl.exe")?)
             .args(args)
             .env("WSL_UTF8", "1")
             .stdin(Stdio::null())
@@ -494,7 +570,7 @@ mod imp {
 
     /// Run `sh -c script` in a distro, optionally feeding `stdin`. Returns stdout.
     pub fn wsl_sh(t: &ShimTarget, script: &str, stdin: Option<&str>) -> Result<String> {
-        let mut c = Command::new("wsl.exe");
+        let mut c = Command::new(system_exe("wsl.exe")?);
         c.args(["-d", &t.distro]);
         if let Some(u) = &t.user {
             c.args(["-u", u]);
@@ -512,9 +588,11 @@ mod imp {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .context("start wsl.exe")?;
-        if let Some(input) = stdin {
-            child.stdin.take().unwrap().write_all(input.as_bytes())?;
-        }
+        // A failed write usually means wsl.exe has exited: its own error says more, so wait for it.
+        let written = match (stdin, child.stdin.take()) {
+            (Some(input), Some(mut pipe)) => pipe.write_all(input.as_bytes()),
+            _ => Ok(()),
+        };
         let what = format!("wsl.exe -d {}", t.distro);
         let out = wait_limited(child, SHIM_TIMEOUT, &what)?;
         if !out.status.success() {
@@ -524,6 +602,7 @@ mod imp {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
+        written.context("send the script's input to wsl.exe")?;
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
@@ -550,23 +629,46 @@ mod imp {
             t,
             r#"exec "${SHELL:-/bin/sh}" -lc 'printf %s "$PATH"'"#,
             None,
-        )
-        .unwrap_or_default();
+        );
         let bin = format!("{home}/.local/bin");
-        if !path.split(':').any(|p| p == bin || p == "~/.local/bin") {
-            outln!(
+        match path {
+            Ok(path) if path.split(':').any(|p| p == bin || p == "~/.local/bin") => {}
+            Ok(_) => outln!(
                 "  note: {bin} is not on PATH in {}; add it to your shell profile",
                 t.distro
-            );
+            ),
+            Err(e) => outln!(
+                "  note: couldn't check whether {bin} is on PATH in {}: {e:#}",
+                t.distro
+            ),
         }
         Ok(())
     }
 
-    pub fn uninstall(store: &Store, purge: bool) -> Result<()> {
-        let record = store.install_record()?;
+    /// Remove the shim from a distro (only a file with our marker), and say how it went. Returns
+    /// false if that couldn't be checked.
+    fn remove_shim(t: &ShimTarget) -> bool {
         let script = format!(
             r#"f="$HOME/.local/bin/toastback"; if head -n 2 "$f" 2>/dev/null | grep -q '{SHIM_MARKER}'; then rm -f "$f" && echo removed; fi"#
         );
+        match wsl_sh(t, &script, None) {
+            Ok(out) => {
+                if out.contains("removed") {
+                    outln!("removed the shim in {}", t.distro);
+                } else {
+                    outln!("no toastback shim in {}", t.distro);
+                }
+                true
+            }
+            Err(e) => {
+                errln!("warning: shim in {}: {e:#}", t.distro);
+                false
+            }
+        }
+    }
+
+    pub fn uninstall(store: &Store, purge: bool) -> Result<()> {
+        let record = readable_record(store);
         let existing = list_distros().ok();
         for t in record.iter().flat_map(|r| &r.shims) {
             if existing.as_ref().is_some_and(|e| !has_distro(e, &t.distro)) {
@@ -576,11 +678,7 @@ mod imp {
                 );
                 continue;
             }
-            match wsl_sh(t, &script, None) {
-                Ok(out) if out.contains("removed") => outln!("removed the shim in {}", t.distro),
-                Ok(_) => outln!("no toastback shim in {}", t.distro),
-                Err(e) => errln!("warning: shim in {}: {e:#}", t.distro),
-            }
+            remove_shim(t);
         }
         if record.as_ref().is_some_and(|r| r.path_added)
             && remove_from_path(&store.bin_dir().to_string_lossy())?
@@ -644,7 +742,7 @@ mod imp {
         };
         let me = fs::canonicalize(std::env::current_exe()?)?;
         if me.starts_with(fs::canonicalize(target)?) {
-            Command::new("cmd.exe")
+            Command::new(system_exe("cmd.exe")?)
                 .raw_arg(format!(
                     "/d /c ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"",
                     target.display()
@@ -795,6 +893,13 @@ mod tests {
         assert!(parse_distro_list(b"").is_empty());
     }
 
+    fn with_shims(shims: &[ShimTarget]) -> InstallRecord {
+        InstallRecord {
+            shims: shims.to_vec(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn shim_targets_keep_the_calling_user() {
         let ctx = Context {
@@ -887,16 +992,63 @@ mod tests {
         let recorded = [t("Ubuntu", Some("g")), t("Removed", None)];
         let list = || Ok(vec!["ubuntu".to_string(), "Debian".to_string()]);
         // users stay as recorded; distros that no longer exist drop out
-        let plan = shim_targets(None, &none, Some(&recorded), list, no_default).unwrap();
+        let rec = with_shims(&recorded);
+        let plan = shim_targets(None, &none, Some(&rec), list, no_default).unwrap();
         assert_eq!(plan.targets, [t("Ubuntu", Some("g"))]);
-        // `--wsl none` earlier: stays none, without even asking WSL
+        // `--wsl none` earlier: stays none, without even asking WSL, even with shims still listed
         let no_list = || -> Result<Vec<String>> { panic!("no listing needed") };
-        let plan = shim_targets(None, &none, Some(&[]), no_list, no_default).unwrap();
+        let declined = InstallRecord {
+            no_shims: Some(true),
+            ..with_shims(&recorded)
+        };
+        let plan = shim_targets(None, &none, Some(&declined), no_list, no_default).unwrap();
+        assert_eq!(plan, ShimPlan::default());
+        // ... and so does a record from before `no_shims` with no shims
+        let old = InstallRecord::default();
+        let plan = shim_targets(None, &none, Some(&old), no_list, no_default).unwrap();
         assert_eq!(plan, ShimPlan::default());
         // an explicit --wsl wins
         let default = || Ok(Some("Debian".to_string()));
-        let plan = shim_targets(Some("default"), &none, Some(&recorded), list, default).unwrap();
+        let plan = shim_targets(Some("default"), &none, Some(&rec), list, default).unwrap();
         assert_eq!(plan.targets, [t("Debian", None)]);
+    }
+
+    #[test]
+    fn shim_targets_recover_from_an_install_that_wrote_none() {
+        let none = Context::default();
+        let list = || Ok(vec!["Debian".to_string()]);
+        let default = || Ok(Some("Debian".to_string()));
+        let debian = [ShimTarget {
+            distro: "Debian".into(),
+            user: None,
+        }];
+        // a first install without WSL: not a choice, so a later one uses the default distro
+        let nothing_written = InstallRecord {
+            no_shims: Some(false),
+            ..Default::default()
+        };
+        let plan = shim_targets(None, &none, Some(&nothing_written), list, default).unwrap();
+        assert_eq!(plan.targets, debian);
+        // every recorded distro is gone: the same
+        let removed = with_shims(&[ShimTarget {
+            distro: "Removed".into(),
+            user: None,
+        }]);
+        let plan = shim_targets(None, &none, Some(&removed), list, default).unwrap();
+        assert_eq!(plan.targets, debian);
+    }
+
+    #[test]
+    fn shim_targets_refuse_an_unknown_distro() {
+        let no_default = || -> Result<Option<String>> { panic!("no default needed") };
+        let list = || Ok(vec!["Ubuntu".to_string()]);
+        let none = Context::default();
+        let e = shim_targets(Some("Ubunut"), &none, None, list, no_default).unwrap_err();
+        assert!(e.to_string().contains("no WSL distro named Ubunut"), "{e}");
+        assert!(e.to_string().contains("Ubuntu"), "{e}");
+        // without a listing there's no telling: an error too, with nothing changed yet
+        let broken = || -> Result<Vec<String>> { anyhow::bail!("stuck") };
+        assert!(shim_targets(Some("Ubuntu"), &none, None, broken, no_default).is_err());
     }
 
     #[test]
@@ -948,6 +1100,55 @@ mod tests {
         let e = imp::wait_limited(spawn(&["/d", "/c", "ping -n 30 127.0.0.1"]), short, "ping");
         assert!(e.unwrap_err().to_string().contains("no answer"));
         assert!(started.elapsed() < limit);
+    }
+
+    /// A process the child started keeps the pipes open: the child's exit still ends the wait.
+    #[cfg(windows)]
+    #[test]
+    fn wait_limited_does_not_wait_for_what_the_child_started() {
+        let child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "start /b ping -n 21 127.0.0.1 & echo hi"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_secs(60);
+        let out = imp::wait_limited(child, limit, "cmd").unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hi"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn system_programs_have_a_full_path() {
+        let exe = imp::system_exe("hostname.exe").unwrap();
+        assert!(exe.is_absolute(), "{}", exe.display());
+        assert!(exe.exists(), "{}", exe.display());
+        // Windows reports it as `system32` or `System32`
+        let dir = exe.parent().unwrap().file_name().unwrap();
+        assert!(dir.eq_ignore_ascii_case("system32"), "{}", exe.display());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copy_exe_replaces_only_with_a_complete_copy() {
+        let dir = std::env::temp_dir().join(format!("toastback-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("src.exe"), dir.join("dest.exe"));
+        std::fs::write(&dest, b"old").unwrap();
+        // the source can't be read: the old exe stays
+        assert!(imp::copy_exe(&src, &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        std::fs::write(&src, b"new").unwrap();
+        imp::copy_exe(&src, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        // no temporary copy stays behind
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
