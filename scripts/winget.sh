@@ -41,7 +41,9 @@ win_env_dir() {
 
 # A directory on the Windows side: winget doesn't take manifests from a \\wsl.localhost path.
 win_work_dir() {
-  printf '%s/toastback-winget/%s' "$(win_env_dir TEMP)" "$1"
+  local temp
+  temp=$(win_env_dir TEMP) # on its own line: a failure inside "$(...)" in printf's arguments would go unnoticed
+  printf '%s/toastback-winget/%s' "$temp" "$1"
 }
 
 # render VERSION URL SHA256 RELEASE_DATE: write the manifest to a Windows dir and print that dir (a WSL path)
@@ -181,9 +183,11 @@ cmd_test_local() {
 }
 
 cmd_test_release() {
+  local dir
   need_tools
   check_local_manifests_enabled
-  cycle "$(release_manifest "$1")"
+  dir=$(release_manifest "$1")
+  cycle "$dir"
 }
 
 cmd_submit() {

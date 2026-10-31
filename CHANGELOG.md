@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `WSLENV` in a callback's `env` is merged with toastback's instead of replaced, and keeps its flags.
 - `&` in a button label shows as `&` in dialogs too.
 - U+FFFE and U+FFFF in notification text no longer make `show` fail.
+- `--help` starts with what toastback does, not with the description of its WSL options.
+- Text for `-t`, `-m` and `-d` that matches a flag of another command (`-m --json`, `-m -n`) is taken as text instead of
+  failing the notification.
 
 ## [1.3.0] - 2026-10-31
 
