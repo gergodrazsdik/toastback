@@ -251,6 +251,22 @@ impl Run {
         for key in self.env.keys() {
             ensure!(is_env_name(key), "env: invalid variable name {key:?}");
         }
+        // Windows can't pass one to a process: the click would only find out then
+        let mut strings: Vec<&str> = match self.kind()? {
+            RunKind::WslShell(s) | RunKind::Cmd(s) | RunKind::Pwsh(s) | RunKind::Open(s) => vec![s],
+            RunKind::WslArgv(a) | RunKind::Exe(a) => a.iter().map(String::as_str).collect(),
+        };
+        strings.extend(self.env.values().map(String::as_str));
+        strings.extend(
+            [&self.cwd, &self.distro, &self.user]
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
+        );
+        ensure!(
+            !strings.iter().any(|s| s.contains('\0')),
+            "contains a NUL character"
+        );
         self.timeout().context("timeout")?;
         Ok(())
     }
@@ -405,6 +421,14 @@ impl Spec {
         if let Some(r) = &self.default {
             r.validate().context("default")?;
         }
+        let c = &self.context;
+        ensure!(
+            ![&c.distro, &c.user, &c.cwd]
+                .into_iter()
+                .flatten()
+                .any(|s| s.contains('\0')),
+            "context: contains a NUL character"
+        );
         Ok(())
     }
 }
@@ -472,6 +496,27 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nul_in_what_reaches_a_process_is_refused() {
+        for run in [
+            r#"{"wsl": "a\u0000b"}"#,
+            r#"{"wsl": ["a\u0000b"]}"#,
+            r#"{"exe": ["x", "a\u0000b"]}"#,
+            r#"{"cmd": "x", "env": {"K": "a\u0000b"}}"#,
+            r#"{"pwsh": "x", "cwd": "a\u0000b"}"#,
+        ] {
+            let s = Spec::parse(&format!(r#"{{"title": "t", "default": {run}}}"#)).unwrap();
+            assert!(s.validate().is_err(), "{run}");
+        }
+        let s = Spec::parse(r#"{"title": "t", "context": {"cwd": "a\u0000b"}}"#).unwrap();
+        assert!(s.validate().is_err());
+        // a title is only shown; the callback's variable drops it
+        Spec::parse(r#"{"title": "a\u0000b"}"#)
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
 
     fn spec(json: &str) -> Spec {
         Spec::parse(json).unwrap()

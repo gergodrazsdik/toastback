@@ -18,6 +18,7 @@ pub fn escape(s: &str) -> String {
             '\'' => out.push_str("&apos;"),
             // XML 1.0 forbids most control characters, even escaped
             c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {}
+            '\u{fffe}' | '\u{ffff}' => {}
             c => out.push(c),
         }
     }
@@ -179,6 +180,11 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_drops_what_xml_forbids() {
+        assert_eq!(escape("a\u{ffff}b\u{fffe}c\u{0}d\ne"), "abcd\ne");
+    }
     use crate::spec::Spec;
 
     #[test]
