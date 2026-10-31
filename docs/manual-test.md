@@ -124,6 +124,11 @@ covered by the smoke job, so here they only need to be checked once.
 42. **Button text and paths:** `toastback --mode dialog` with a spec whose button is labelled `R&D` shows `R&D` on the
     button. A toast with `{"open": "/mnt/c/Windows/win.ini"}` as its `default` opens that file when clicked.
 
+44. **Shells:** `sh`, `bash`, `zsh` and `dash` (where installed) each install through
+    `cat scripts/install.sh | TOASTBACK_BASE_URL=<assets> <shell>`, and in a distro without bash (Alpine) the shim shows
+    a toast, also with `WSL_DISTRO_NAME=` set but empty. A `{"wsl": "echo \"$0\""}` callback logs `bash`, and `sh` with
+    `"distro"` set to a distro without bash.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

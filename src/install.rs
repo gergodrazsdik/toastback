@@ -19,7 +19,7 @@ pub const PUBLISHER: &str = "Gergő Drazsdik";
 pub fn render_shim(version: &str, win_exe: &str) -> String {
     // the path sits in single quotes: close, escaped quote, reopen
     let quoted = win_exe.replace('\'', r"'\''");
-    // LF only, even if the template was checked out with CRLF: it runs in bash
+    // LF only, even if the template was checked out with CRLF: it runs in sh
     SHIM_TEMPLATE
         .replace('\r', "")
         .replace("{{VERSION}}", version)
@@ -863,7 +863,7 @@ mod tests {
             "0.1.0",
             r"C:\Users\o'neil\AppData\Local\toastback\bin\toastback.exe",
         );
-        assert!(s.starts_with("#!/usr/bin/env bash\n"));
+        assert!(s.starts_with("#!/bin/sh\n"));
         assert!(s.lines().nth(1).unwrap().starts_with(SHIM_MARKER));
         assert!(s.contains("toastback 0.1.0)"));
         // systemd services and the like have no WSL_DISTRO_NAME: the shim falls back to wslpath

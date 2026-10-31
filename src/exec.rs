@@ -62,6 +62,11 @@ pub struct Outcome {
     pub stderr: String,
 }
 
+/// Runs a `wsl` string callback (`$1`) in `bash`, or in `sh` in a distro without bash. Both as login
+/// shells, for the user's PATH.
+pub const WSL_SHELL_SCRIPT: &str =
+    r#"command -v bash >/dev/null 2>&1 && exec bash -lc "$1"; exec sh -lc "$1""#;
+
 /// Build the process for a callback.
 ///
 /// `vars` are the `TOASTBACK_*` variables. For `wsl` runs, they and the run's own `env` are added to
@@ -121,7 +126,13 @@ pub fn plan(
             // to the user's login shell for a second round of parsing.
             args.push("--exec".into());
             match run.kind()? {
-                RunKind::WslShell(s) => args.extend(["bash".into(), "-lc".into(), s.into()]),
+                RunKind::WslShell(s) => args.extend([
+                    "sh".into(),
+                    "-c".into(),
+                    WSL_SHELL_SCRIPT.into(),
+                    "toastback".into(),
+                    s.into(),
+                ]),
                 RunKind::WslArgv(a) => args.extend(a.iter().cloned()),
                 _ => unreachable!(),
             }
@@ -712,8 +723,10 @@ mod tests {
                 "--cd",
                 "/home/g/app",
                 "--exec",
-                "bash",
-                "-lc",
+                "sh",
+                "-c",
+                WSL_SHELL_SCRIPT,
+                "toastback",
                 "./deploy.sh --env prod"
             ]
         );

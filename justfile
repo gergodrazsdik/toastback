@@ -35,7 +35,7 @@ check:
     cargo fmt --check
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
     shellcheck scripts/*.sh
-    shellcheck -s bash res/shim.sh.tmpl
+    shellcheck -s sh res/shim.sh.tmpl
     yamllint -s .github .yamllint packaging
     actionlint
 
