@@ -59,19 +59,19 @@ once the checksum is right (`install.sh: OK`):
 cd "$(mktemp -d)"
 base=https://github.com/gergodrazsdik/toastback/releases/latest/download
 curl -fsSLO "$base/install.sh" && curl -fsSLO "$base/SHA256SUMS"
-sha256sum -c --ignore-missing SHA256SUMS && less install.sh
+grep ' install\.sh$' SHA256SUMS | sha256sum -c - && less install.sh
 ```
 
 Then, in the same directory, run it (add `--add-to-path` for `toastback-cli` in cmd and PowerShell):
 
 ```bash
-bash install.sh
+sh install.sh
 ```
 
 `install.sh` downloads `toastback.exe`, `toastback-cli.exe` and the release's `SHA256SUMS` into your Windows temp
 folder, checks the exes against it, and runs `toastback.exe install` for your distro and user. Extra arguments go
 to `install`. For a specific version, use `releases/download/v1.0.0` as `base` and run
-`TOASTBACK_VERSION=v1.0.0 bash install.sh`. Release builds also carry a
+`TOASTBACK_VERSION=v1.0.0 sh install.sh`. Release builds also carry a
 [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
 `gh attestation verify toastback.exe -R gergodrazsdik/toastback` (likewise `toastback-cli.exe`, the zip and, in
 releases after 1.0.0, `install.sh`) shows that GitHub Actions built the file from this repository.
@@ -310,11 +310,14 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
+- **Distros without bash (Alpine):** `install.sh` (which uses `wget` if there's no `curl`) and the `toastback` command
+  need only POSIX `sh`, whatever your interactive shell is. A `{"wsl": "string"}` callback runs in `bash`, so there use
+  the argv form, `{"wsl": ["sh", "-lc", "string"]}`.
 - **toastback isn't code-signed** (a deliberate choice, see [docs/decisions/004-m4.md](docs/decisions/004-m4.md)).
   With Windows 11's **Smart App Control** turned on, Windows may block unsigned apps it doesn't know yet ("An
   Application Control policy has blocked this file"; `install.sh` reports it). Smart App Control has no per-app
   exceptions. Without it, a browser download may still trigger SmartScreen on first run. `install` writes a fresh
-  copy, so clicks don't trigger "downloaded from the internet" prompts; `install.sh` downloads with curl, which sets
+  copy, so clicks don't trigger "downloaded from the internet" prompts; `install.sh` downloads with curl or wget, which set
   no download marker at all.
 - Dialogs show only the built-in icons (`info`, `warning`, `error`, `question`), not an image file. With an image
   `icon` or none, a dialog shows the warning icon for `alarm`/`urgent` and the information icon otherwise.
