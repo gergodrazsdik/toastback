@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--help` starts with what toastback does, not with the description of its WSL options.
+- Text for `-t`, `-m` and `-d` that matches a flag of another command (`-m --json`, `-m -n`) is taken as text instead of
+  failing the notification.
+
 ### Changed
 
 - `install --wsl NAME` refuses a distro that doesn't exist, and `install --wsl ...` exits with an error when a shim it

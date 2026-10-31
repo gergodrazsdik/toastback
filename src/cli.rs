@@ -14,10 +14,6 @@ use crate::spec::{Context, Mode, QuickFlags, Scenario};
 #[cfg(windows)]
 use crate::{activate, doctor, examples, install, show, toast};
 
-/// Async Windows toasts with callbacks, for WSL and scripts.
-///
-/// Shows a notification described by a JSON spec (FILE, or stdin) and/or quick flags, prints its
-/// id and exits. Clicking a button later runs that button's callback.
 /// Shown after the help of the top-level command and `show`.
 const HELP_EXAMPLES: &str = "\
 Examples:
@@ -26,6 +22,10 @@ Examples:
   toastback --mode dialog -t \"Hello\" -m \"World\"    a dialog instead
   toastback examples                               ready-made specs with buttons and callbacks";
 
+/// Async Windows toasts with callbacks, for WSL and scripts.
+///
+/// Shows a notification described by a JSON spec (FILE, or stdin) and/or quick flags, prints its
+/// id and exits. Clicking a button later runs that button's callback.
 #[derive(Parser)]
 #[command(version = VERSION, after_help = HELP_EXAMPLES)]
 pub struct Cli {
@@ -76,13 +76,21 @@ impl Cli {
 
 /// Text for -t, -m and -d often comes from a script's output, which may start with `-` (`-- Build
 /// files have been written`): pass such a value as `--body=<value>`, so clap takes it as the value.
-/// A value that is one of our own flags stays a flag (`-t -m x` is still "-t needs a value").
+/// A value that is a flag of `show` stays a flag (`-t -m x` is still "-t needs a value"); other
+/// commands' flags are just text here (`-m --json`).
 fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
     use clap::CommandFactory;
-    const TEXT_FLAGS: [&str; 6] = ["-t", "--title", "-m", "--body", "-d", "--details"];
+    const TEXT_FLAGS: [(&str, &str); 3] =
+        [("-t", "--title"), ("-m", "--body"), ("-d", "--details")];
+    let long_flag = |arg: &std::ffi::OsString| {
+        let arg = arg.to_str()?;
+        TEXT_FLAGS
+            .iter()
+            .find(|(short, long)| arg == *short || arg == *long)
+            .map(|(_, long)| *long)
+    };
     let dash_value = |pair: &[std::ffi::OsString]| {
-        pair[0].to_str().is_some_and(|f| TEXT_FLAGS.contains(&f))
-            && pair[1].to_str().is_some_and(|v| v.starts_with('-'))
+        long_flag(&pair[0]).is_some() && pair[1].to_str().is_some_and(|v| v.starts_with('-'))
     };
     // the usual case (a click, a dialog, plain text): no need for the list of our flags
     if !args.windows(2).any(dash_value) {
@@ -90,7 +98,7 @@ fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
     }
     let cmd = Cli::command();
     let mut flags: Vec<String> = vec!["--".into(), "-".into()];
-    for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
+    for c in std::iter::once(&cmd).chain(cmd.find_subcommand("show")) {
         for a in c.get_arguments() {
             flags.extend(a.get_short().map(|s| format!("-{s}")));
             flags.extend(a.get_long().map(|l| format!("--{l}")));
@@ -104,14 +112,9 @@ fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
     };
     let mut i = 0;
     while i + 1 < args.len() {
-        let long = match args[i].to_str() {
-            Some("-t" | "--title") => "--title",
-            Some("-m" | "--body") => "--body",
-            Some("-d" | "--details") => "--details",
-            _ => {
-                i += 1;
-                continue;
-            }
+        let Some(long) = long_flag(&args[i]) else {
+            i += 1;
+            continue;
         };
         match args[i + 1].to_str() {
             Some(v) if v.starts_with('-') && !is_flag(v) => {
@@ -470,6 +473,7 @@ mod tests {
             .unwrap()
             .render_help()
             .to_string();
+        assert!(top.starts_with("Async Windows toasts"), "{top}");
         for help in [top, show] {
             assert!(
                 help.contains(r#"toastback -t "Hello" -m "World""#),
@@ -532,6 +536,19 @@ mod tests {
             Some("-- Build files have been written")
         );
         assert_eq!(show(&cli).details.as_deref(), Some("-1"));
+        // the flags of other commands are text too
+        for text in ["-n", "--json", "--wsl", "--purge"] {
+            let cli = parse(&["-t", "x", "-m", text]);
+            assert_eq!(show(&cli).body.as_deref(), Some(text));
+        }
+        // show's own flags and the global ones aren't
+        for flag in ["--mode", "--id", "--distro", "--help"] {
+            assert!(Cli::parse_with_default(["toastback", "-t", "x", "-m", flag]).is_err());
+        }
+        assert!(matches!(
+            parse(&["log", "-n", "5"]).command,
+            Command::Log { n: 5, .. }
+        ));
 
         // no arguments at all: show, reading stdin
         assert_eq!(show(&parse(&[])).file, None);
