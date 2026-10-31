@@ -265,7 +265,8 @@ use `pwsh`. In `exe` and `open`, a path starting with `/`, `./` or `../` is a WS
 like `notes.txt` is left to Windows, so set `cwd` if it's a file.
 A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
 otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
-names of its `env` variables, not their values.
+names of its `env` variables, not their values. The values stay in plain text in
+`%LOCALAPPDATA%\toastback\pending` until the notification is clicked or expires, so prefer short-lived tokens.
 
 A program a callback leaves running in the background (`start /b server.exe`, `Start-Process -NoNewWindow`,
 `server &`) should send its output elsewhere (`> server.log 2>&1`): toastback reads the callback's output only until

@@ -13,12 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A clicked notification's `env` values are removed from its pending file at once, instead of staying until it expires.
 - `install --wsl NAME` refuses a distro that doesn't exist, and `install --wsl ...` exits with an error when a shim it
   was asked for can't be written (it used to warn and exit 0).
 - `install --wsl none` removes the shims of earlier installs.
 
 ### Fixed
 
+- An image that can't be deleted (in use) no longer stops `prune`, `remove` or `clear` from deleting the other images,
+  and `prune` tries it again later.
+- A toast that fails to show no longer leaves its pending file and cached images behind.
+- `show` exits 3, not 2, when it can't write to the image cache.
+- `validate` reads `icon` and `image`, so one that `show` couldn't read no longer passes.
+- `clear` no longer counts files it leaves alone, and names them.
 - `install` could wait forever for a program started in WSL that kept `wsl.exe`'s output open, despite the time limits.
 - `install` could run a `wsl.exe` planted next to the downloaded exe. It now runs `wsl.exe` and `cmd.exe` from System32.
 - A first install that couldn't write a shim (no WSL yet, Docker Desktop's distro as the default) no longer counts as
@@ -29,7 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A damaged `install.json` no longer blocks `install` and `uninstall`, and `show` reports it instead of "not installed".
 - `install` warns when it can't update `toastback-cli.exe`, reports a failed PATH check as such, and shows `wsl.exe`'s
   own error when the distro can't start.
-||||||| Stash base
 - Output of localized `wsl.exe` messages could come out garbled in failure toasts and `toastback log`.
 - A relative `icon`, `image` or `cwd` with a Windows `context.cwd` no longer builds a broken path, and one with a
   `context.cwd` like `~/x` is an error at show time.
