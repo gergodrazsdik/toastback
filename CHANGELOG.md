@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - U+FFFE and U+FFFF in notification text no longer make `show` fail.
 - Ids that differ only in case (`Deploy`, `deploy`) are one notification: the second toast replaces the first, instead
   of leaving a toast with dead buttons that `remove` couldn't reach.
+- The cleanup command `uninstall` prints when a replaced exe is still running now works. PowerShell opened "Open with"
+  for its old name, `toastback.exe.old-<pid>`; the file is now `toastback.old-<pid>.exe`.
 - `--help` starts with what toastback does, not with the description of its WSL options.
 - Text for `-t`, `-m` and `-d` that matches a flag of another command (`-m --json`, `-m -n`) is taken as text instead of
   failing the notification.

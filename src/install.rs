@@ -156,6 +156,18 @@ fn same_dir(a: &str, b: &str) -> bool {
         .eq_ignore_ascii_case(b.trim_end_matches('\\'))
 }
 
+/// A running exe moved aside: it can't be replaced or deleted, only renamed. The name still ends in
+/// `.exe`: `uninstall` may print it as a command, and PowerShell only runs a file with that ending
+/// as a program (anything else opens the "Open with" window).
+pub fn moved_aside_name(exe_stem: &str, pid: u32) -> String {
+    format!("{exe_stem}.old-{pid}.exe")
+}
+
+/// Is this file in the bin dir left over from replacing an exe? (`.exe.old-<pid>`: before 1.4.)
+pub fn is_stale_copy(name: &str) -> bool {
+    name.contains(".old-") || name.contains(".exe.new-")
+}
+
 /// Is `dir` one of the `;`-separated entries of a PATH value?
 pub fn path_contains(path: &str, dir: &str) -> bool {
     path.split(';').any(|p| same_dir(p, dir))
@@ -216,9 +228,9 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, PUBLISHER, SHIM_MARKER, has_distro, parse_default_distro,
-        parse_distro_list, path_with, path_without, protocol_command, render_shim, same_distro,
-        uninstall_command,
+        CLI_EXE, GUI_EXE, PUBLISHER, SHIM_MARKER, has_distro, is_stale_copy, moved_aside_name,
+        parse_default_distro, parse_distro_list, path_with, path_without, protocol_command,
+        render_shim, same_distro, uninstall_command,
     };
     use crate::exec::{Drain, OUTPUT_GRACE};
     use crate::registry::{self, Kind};
@@ -418,12 +430,10 @@ mod imp {
         registry::set_dword(APP_KEY, "EstimatedSize", kb)
     }
 
-    /// `*.old-<pid>` and `*.new-<pid>` files left over from replacing an exe.
+    /// Files left over from replacing an exe.
     fn remove_stale_copies(bin: &Path) {
         for entry in fs::read_dir(bin).into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.contains(".exe.old") || name.contains(".exe.new") {
+            if is_stale_copy(&entry.file_name().to_string_lossy()) {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -453,7 +463,8 @@ mod imp {
             return Ok(());
         }
         // in use (a callback is running): a running exe can be renamed, not replaced
-        let old = dest.with_extension(format!("exe.old-{pid}"));
+        let stem = dest.file_stem().unwrap_or_default().to_string_lossy();
+        let old = dest.with_file_name(moved_aside_name(&stem, pid));
         fs::rename(dest, &old)
             .with_context(|| format!("move the running {} aside", dest.display()))?;
         fs::rename(new, dest).map_err(|e| {
@@ -1068,6 +1079,19 @@ mod tests {
         assert!(is_docker_distro("docker-desktop-data"));
         assert!(is_docker_distro("Docker-Desktop"));
         assert!(!is_docker_distro("Ubuntu"));
+    }
+
+    #[test]
+    fn exes_moved_aside_stay_runnable_and_get_cleaned_up() {
+        let old = moved_aside_name("toastback", 123);
+        assert_eq!(old, "toastback.old-123.exe");
+        assert!(is_stale_copy(&old));
+        // left by earlier versions, and by an interrupted copy
+        assert!(is_stale_copy("toastback.exe.old-123"));
+        assert!(is_stale_copy("toastback-cli.exe.new-123"));
+        for current in ["toastback.exe", "toastback-cli.exe", "icon.png"] {
+            assert!(!is_stale_copy(current), "{current}");
+        }
     }
 
     #[test]
