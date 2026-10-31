@@ -25,8 +25,35 @@ what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [PLAN.md](PLAN
 
 ## Install
 
-**From WSL:** in an empty directory, download the installer and the checksums, check the installer and read it.
-`less` only opens once the checksum is right (`install.sh: OK`):
+toastback always installs on the Windows side, for your user and without admin rights, even when you start the
+install from WSL. To call it from WSL, it also needs a small **shim** script, `~/.local/bin/toastback`, in each distro
+you use. Pick the method that matches how you work:
+
+| Method | Best for | Shim goes to | Added to the Windows PATH |
+|---|---|---|---|
+| [winget](#winget) | Windows and WSL, with upgrades through winget | the default distro | yes |
+| [`install.sh`](#from-wsl-installsh) | working mainly in one distro | that distro, for your user | with `--add-to-path` |
+| [Zip](#zip) | no winget, or a specific version on Windows | the default distro | with `--add-to-path` |
+| [From source](#from-source) | developing toastback | that distro, for your user | yes |
+
+Whichever you use, `install` copies `toastback.exe` and `toastback-cli.exe` to `%LOCALAPPDATA%\toastback\bin`,
+registers the `toastback://` protocol, the notification app id and an Apps & Features entry (HKCU only), writes the
+shim and shows a test notification. `toastback doctor` checks everything.
+
+### winget
+
+```powershell
+winget install GergoDrazsdik.Toastback
+```
+
+Then open a new terminal, so that it sees the new PATH. Upgrade with `winget upgrade GergoDrazsdik.Toastback`, which
+refreshes the shims you already have, and remove it with `winget uninstall GergoDrazsdik.Toastback`. winget's
+install shows no test notification; try `toastback-cli -t hello` instead.
+
+### From WSL: `install.sh`
+
+In an empty directory, download the installer and the checksums, check the installer and read it. `less` only opens
+once the checksum is right (`install.sh: OK`):
 
 ```bash
 cd "$(mktemp -d)"
@@ -43,29 +70,74 @@ bash install.sh
 
 `install.sh` downloads `toastback.exe`, `toastback-cli.exe` and the release's `SHA256SUMS` into your Windows temp
 folder, checks the exes against it, and runs `toastback.exe install` for your distro and user. Extra arguments go
-to `install` (`--wsl all` for every distro). For a specific version, use `releases/download/v1.0.0` as `base` and
-run `TOASTBACK_VERSION=v1.0.0 bash install.sh`. Release builds also carry a
+to `install`. For a specific version, use `releases/download/v1.0.0` as `base` and run
+`TOASTBACK_VERSION=v1.0.0 bash install.sh`. Release builds also carry a
 [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
 `gh attestation verify toastback.exe -R gergodrazsdik/toastback` (likewise `toastback-cli.exe`, the zip and, in
 releases after 1.0.0, `install.sh`) shows that GitHub Actions built the file from this repository.
 
-**On Windows only:** download `toastback-x86_64.zip` from the
-[releases](https://github.com/gergodrazsdik/toastback/releases), extract it anywhere, then run
-`toastback.exe install --wsl all --add-to-path` (or `--wsl none` without WSL).
+### Zip
 
-**From source** (in WSL, with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), clang/lld/llvm and
-[just](https://github.com/casey/just)): `just setup` once, then `just install`.
+Download `toastback-x86_64.zip` from the [releases](https://github.com/gergodrazsdik/toastback/releases), extract it
+anywhere, then in that folder run:
 
-`install` copies `toastback.exe` and `toastback-cli.exe` to `%LOCALAPPDATA%\toastback\bin`, registers the
-`toastback://` protocol and the notification app id (HKCU only), writes the WSL shim
-`~/.local/bin/toastback` and shows a test notification. Re-run it to upgrade. `toastback doctor` checks
-everything; `toastback uninstall [--purge]` removes it all (`--purge` also deletes logs and pending
-notifications).
+```powershell
+.\toastback-cli.exe install --add-to-path
+```
+
+You can delete the extracted folder afterwards. To upgrade, do the same with the new zip.
+
+### From source
+
+In WSL, with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), clang/lld/llvm and
+[just](https://github.com/casey/just): `just setup` once, then `just install`.
+
+### Which distros get the shim
+
+Choose with `--wsl`. Without it, `install` uses the calling distro when run through `install.sh` or `just install`.
+From Windows, a first install uses the default distro, and a later one (including `winget upgrade`) refreshes the
+shims from the last install, so your choice stays.
+
+| `--wsl` | Writes the shim to |
+|---|---|
+| `default` | the default distro (the one marked `*` in `wsl -l -v`) |
+| `all` | every distro except Docker Desktop's (`docker-desktop*`), which are skipped with a note |
+| a distro name | that distro, including Docker Desktop's if you name it |
+| `none` | nowhere, for Windows-only use |
+
+If Docker Desktop's distro is your default, no shim is written and a warning asks you to choose one with `--wsl`.
+
+Other `install` options:
 
 | Option | Meaning |
 |---|---|
-| `--wsl DISTRO\|all\|none` | where to write the WSL shim (default: the distro you run it from, else all) |
 | `--add-to-path` | add the install dir to your user PATH, for `toastback-cli` in cmd/PowerShell |
+| `--quiet` | skip the test notification |
+
+### Add the shim to another distro
+
+For a distro you installed later, or one the install skipped. **From inside that distro**, so that the shim is for your
+user there (replace `<you>` with your Windows user name):
+
+```bash
+/mnt/c/Users/<you>/AppData/Local/toastback/bin/toastback.exe install --quiet \
+  --wsl "$WSL_DISTRO_NAME" --distro "$WSL_DISTRO_NAME" --user "$(id -un)"
+```
+
+**Or from PowerShell,** for that distro's default user:
+
+```powershell
+& "$env:LOCALAPPDATA\toastback\bin\toastback-cli.exe" install --quiet --wsl Ubuntu-24.04
+```
+
+Existing shims stay, and later upgrades refresh the new one too. If `toastback` isn't found in a new terminal in that
+distro, add `~/.local/bin` to your PATH there.
+
+### Upgrade and uninstall
+
+Upgrade the way you installed: re-running `install` replaces the exes. `toastback uninstall [--purge]` removes
+everything, whichever way it was installed; so does Apps & Features. `--purge` also deletes logs and pending
+notifications.
 
 ## Usage
 
@@ -98,7 +170,7 @@ Other commands:
 
 ### From PowerShell or cmd
 
-Use **`toastback-cli`** (after `install --add-to-path`, or by its full path). It's the same program built as a
+Use **`toastback-cli`** (after a winget install or `install --add-to-path`, or by its full path). It's the same program built as a
 console app, so the shell waits for it, prints its output in order and sets `$LASTEXITCODE`. `toastback.exe`
 is a GUI app (so that clicking a button never flashes a console window), and interactive shells don't wait
 for those.
@@ -263,9 +335,12 @@ Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. `just` lists the reci
 | `just build` | release build of both exes |
 | `just check` | rustfmt, clippy (Windows target, warnings as errors), shellcheck, yamllint, actionlint |
 | `just test` | unit tests on Linux and on Windows (through WSL interop), then `validate` on every example |
-| `just install` | build and install for the current distro |
+| `just install` | build and install for the current distro and on the Windows PATH |
 | `just demo` / `just log` / `just doctor` | show every example / recent events / check the install |
 | `just bump X.Y.Z` / `just release X.Y.Z` | release: open the version-bump PR / after merging it, tag and publish |
+| `just winget-setup` / `just winget-test` | winget: check the tools / install this build through winget, check it and uninstall it |
+| `just winget-manifest X.Y.Z` / `just winget-test-release X.Y.Z` | winget: validate a release's manifest / run the same test with it |
+| `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | winget: open the first winget-pkgs PR / the PR for a later version |
 
 Design notes and decisions are in [docs/decisions/](docs/decisions/); the manual test checklist is
 [docs/manual-test.md](docs/manual-test.md).

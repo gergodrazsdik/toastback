@@ -48,11 +48,7 @@ jobs:
       - name: Package
         run: |
           # asset names carry no version, so releases/latest/download/<name> URLs stay stable
-          mkdir -p pkg/examples pkg/res
-          cp dist/toastback.exe dist/toastback-cli.exe README.md LICENSE pkg/
-          cp examples/* pkg/examples/
-          cp res/icon.png pkg/res/
-          (cd pkg && zip -qr ../dist/toastback-x86_64.zip .)
+          scripts/package.sh dist dist/toastback-x86_64.zip
           cp scripts/install.sh dist/
           # every asset in dist/ is listed (the glob expands before SHA256SUMS exists)
           (cd dist && sha256sum -- * > SHA256SUMS)

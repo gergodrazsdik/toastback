@@ -11,6 +11,10 @@ The plan is `PLAN.md`: §2 holds the locked decisions, §10 the milestones, §13
 - `just test`: host-target tests (`cargo test --target x86_64-unknown-linux-gnu`), then the Windows tests through WSL interop (cargo-xwin forces `wine` as the runner, so the recipe overrides it), then `validate` on every example.
 - `just install`: build and install for this distro (the dev loop); `toastback doctor` checks the result.
 - The built `.exe` runs from WSL directly (`target/x86_64-pc-windows-msvc/release/toastback.exe`). It's GUI-subsystem: redirected output arrives as pipes, and in a terminal `console.rs` attaches the missing streams to the parent console.
+- `just winget-setup`, `winget-test`, `winget-manifest X.Y.Z`, `winget-test-release X.Y.Z`, `winget-submit X.Y.Z`,
+  `winget-update X.Y.Z`: winget packaging through the Windows winget and wingetcreate (`scripts/winget.sh`, templates in
+  `packaging/winget/`, `docs/decisions/006-winget.md`). `winget-test` before merging any PR that touches install, the
+  manifest or packaging. Never run `winget-submit`/`winget-update` unasked: they open public PRs.
 - `scripts/make-icon.sh` re-renders `res/icon.png` and `res/icon.ico` from `res/icon.svg` (placeholder icon).
 
 ## Conventions

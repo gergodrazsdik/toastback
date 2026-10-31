@@ -194,12 +194,16 @@ enum Command {
     Show(ShowArgs),
     /// Install for the current user: copy the exes, register them, write the WSL shim
     Install {
-        /// Distro(s) to write the shim to: a name, `all` or `none` (default: the calling distro, else all)
+        /// Distro(s) to write the shim to: a name, `default`, `all` (without Docker Desktop's) or
+        /// `none`. Without it: the calling distro, else the ones from the last install, else `default`
         #[arg(long)]
         wsl: Option<String>,
         /// Also add the install dir to your user PATH (for cmd/PowerShell: `toastback-cli`)
         #[arg(long)]
         add_to_path: bool,
+        /// Skip the test notification (for unattended installs and upgrades)
+        #[arg(long)]
+        quiet: bool,
     },
     /// Remove everything `install` set up
     Uninstall {
@@ -272,12 +276,20 @@ pub fn run(cli: Cli) -> Result<u8> {
     }
     match cli.command {
         Command::Show(args) => Ok(show::show(&store, &args, &ctx)),
-        Command::Install { wsl, add_to_path } => {
+        Command::Install {
+            wsl,
+            add_to_path,
+            quiet,
+        } => {
             let opts = install::Options {
                 wsl: wsl.as_deref(),
                 add_to_path,
             };
             install::install(&store, &opts, &ctx, env!("CARGO_PKG_VERSION"))?;
+            if quiet {
+                outln!("done");
+                return Ok(0);
+            }
             let spec = Spec {
                 title: "toastback installed".into(),
                 body: Some(format!("Version {VERSION}. Notifications work.")),
@@ -486,7 +498,7 @@ mod tests {
 
         let cli = parse(&["--distro", "D", "install", "--wsl", "none"]);
         assert!(
-            matches!(cli.command, Command::Install { wsl: Some(ref w), add_to_path: false } if w == "none")
+            matches!(cli.command, Command::Install { wsl: Some(ref w), add_to_path: false, quiet: false } if w == "none")
         );
         assert_eq!(cli.ctx.context().distro.as_deref(), Some("D"));
 

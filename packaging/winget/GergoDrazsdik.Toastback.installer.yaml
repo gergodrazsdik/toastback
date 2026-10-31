@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# Template for scripts/winget.sh. winget unpacks the release zip and runs `toastback-cli.exe install`, which installs
+# from the extracted folder to %LOCALAPPDATA%\toastback\bin and writes the Apps & Features entry that winget upgrades
+# and uninstalls by. Why not a portable package: docs/decisions/006-winget.md.
+PackageIdentifier: GergoDrazsdik.Toastback
+PackageVersion: __VERSION__
+MinimumOSVersion: 10.0.19045.0
+InstallerType: zip
+NestedInstallerType: exe
+NestedInstallerFiles:
+  - RelativeFilePath: toastback-cli.exe
+Scope: user
+InstallModes:
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: install --quiet --add-to-path
+  SilentWithProgress: install --quiet --add-to-path
+UpgradeBehavior: install
+Commands:
+  - toastback-cli
+Protocols:
+  - toastback
+ProductCode: Toastback
+ReleaseDate: __DATE__
+AppsAndFeaturesEntries:
+  - DisplayName: toastback
+    Publisher: Gergő Drazsdik
+    DisplayVersion: __VERSION__
+    ProductCode: Toastback
+    InstallerType: exe
+Installers:
+  - Architecture: x64
+    InstallerUrl: __URL__
+    InstallerSha256: __SHA256__
+ManifestType: installer
+ManifestVersion: 1.12.0

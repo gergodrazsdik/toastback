@@ -78,7 +78,7 @@ jobs:
           BUILD: ${{ steps.actionlint.outputs.cache-hit != 'true' }}
         run: |
           pipx install yamllint
-          yamllint -s .github .yamllint
+          yamllint -s .github .yamllint packaging
           if [ "$BUILD" = true ]; then
             GOBIN=~/.cache/actionlint go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
           fi
@@ -147,9 +147,17 @@ jobs:
           $failed = $checks | Where-Object { $_.status -eq 'fail' -and $_.name -ne 'notifications' }
           if ($failed) { throw "doctor failed: $($failed.name -join ', ')" }
 
+          # what winget reads to see the version and to uninstall
+          $appKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Toastback'
+          $app = Get-ItemProperty $appKey
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          if ($app.DisplayVersion -ne $version) { throw "app entry version: $($app.DisplayVersion), not $version" }
+          if (-not $app.QuietUninstallString) { throw 'app entry: no QuietUninstallString' }
+
           Invoke-Toastback uninstall --purge
           foreach ($key in 'HKCU:\Software\Classes\toastback',
-                           'HKCU:\Software\Classes\AppUserModelId\Toastback') {
+                           'HKCU:\Software\Classes\AppUserModelId\Toastback',
+                           $appKey) {
             if (Test-Path $key) { throw "left behind: $key" }
           }
           if (Test-Path "$env:LOCALAPPDATA\toastback") { throw "left behind: $env:LOCALAPPDATA\toastback" }

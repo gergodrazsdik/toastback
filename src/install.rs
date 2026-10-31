@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `install`, `uninstall`, the WSL shim and the user PATH entry.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, ensure};
 
 use crate::context::same_distro;
 use crate::spec::Context;
@@ -12,6 +12,8 @@ const SHIM_TEMPLATE: &str = include_str!("../res/shim.sh.tmpl");
 pub const SHIM_MARKER: &str = "# toastback WSL shim";
 pub const GUI_EXE: &str = "toastback.exe";
 pub const CLI_EXE: &str = "toastback-cli.exe";
+/// Must match `Publisher` in the winget manifest and `CompanyName` in `res/toastback.rc`.
+pub const PUBLISHER: &str = "Gergő Drazsdik";
 
 /// Render the WSL shim for an installed exe at `win_exe` (a Windows path).
 pub fn render_shim(version: &str, win_exe: &str) -> String {
@@ -29,6 +31,28 @@ pub fn protocol_command(exe: &str) -> String {
     format!("\"{exe}\" activate \"%1\"")
 }
 
+/// The silent uninstall command registered in Apps & Features.
+pub fn uninstall_command(exe: &str) -> String {
+    format!("\"{exe}\" uninstall")
+}
+
+/// The default distro in `wsl.exe -l -v` output: the line marked `*` (the header is translated, the
+/// marker isn't). Distro names contain no spaces, so the name is the first word after it.
+pub fn parse_default_distro(bytes: &[u8]) -> Option<String> {
+    crate::exec::decode_output(bytes).lines().find_map(|l| {
+        l.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0')
+            .strip_prefix('*')?
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+    })
+}
+
+/// Docker Desktop's own distros: `--wsl all` and `--wsl default` leave them alone.
+pub fn is_docker_distro(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("docker-desktop")
+}
+
 /// Parse `wsl.exe -l -q` output: UTF-16LE (with BOM/NULs) by default, UTF-8 with `WSL_UTF8=1`.
 pub fn parse_distro_list(bytes: &[u8]) -> Vec<String> {
     crate::exec::decode_output(bytes)
@@ -44,13 +68,24 @@ pub fn has_distro(list: &[String], name: &str) -> bool {
     list.iter().any(|d| same_distro(d, name))
 }
 
+/// Where `install` writes the shim, and the distros `--wsl all` left out.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ShimPlan {
+    pub targets: Vec<ShimTarget>,
+    pub skipped: Vec<String>,
+}
+
 /// Where `install --wsl <wsl>` writes the shim. The calling distro always gets the calling user
-/// (with `all` too); other distros get their default user. `list` runs only when needed.
+/// (with `all` too); other distros get their default user. Without `--wsl`: the calling distro,
+/// else what the install record lists (an upgrade keeps the user's choice), else the default
+/// distro. `recorded` is `None` on a first install. `list` and `default` run only when needed.
 pub fn shim_targets(
     wsl: Option<&str>,
     ctx: &Context,
+    recorded: Option<&[ShimTarget]>,
     list: impl FnOnce() -> Result<Vec<String>>,
-) -> Result<Vec<ShimTarget>> {
+    default: impl FnOnce() -> Result<Option<String>>,
+) -> Result<ShimPlan> {
     let target = |distro: String| ShimTarget {
         user: ctx.user.clone().filter(|_| {
             ctx.distro
@@ -59,11 +94,44 @@ pub fn shim_targets(
         }),
         distro,
     };
-    Ok(match (wsl, &ctx.distro) {
-        (Some("none"), _) => Vec::new(),
-        (Some("all"), _) | (None, None) => list()?.into_iter().map(target).collect(),
-        (Some(d), _) => vec![target(d.into())],
-        (None, Some(d)) => vec![target(d.clone())],
+    let default_target = || -> Result<ShimTarget> {
+        let d = default()?.context("WSL has no default distro")?;
+        ensure!(
+            !is_docker_distro(&d),
+            "the default WSL distro is Docker Desktop's ({d}): choose one with --wsl NAME"
+        );
+        Ok(target(d))
+    };
+    let one = |t| ShimPlan {
+        targets: vec![t],
+        skipped: Vec::new(),
+    };
+    Ok(match (wsl, &ctx.distro, recorded) {
+        (Some("none"), ..) => ShimPlan::default(),
+        (Some("all"), ..) => {
+            let (skipped, distros) = list()?.into_iter().partition(|d| is_docker_distro(d));
+            let distros: Vec<String> = distros;
+            ShimPlan {
+                targets: distros.into_iter().map(target).collect(),
+                skipped,
+            }
+        }
+        (Some("default"), ..) => one(default_target()?),
+        (Some(d), ..) => one(target(d.into())),
+        (None, Some(d), _) => one(target(d.clone())),
+        (None, None, Some([])) => ShimPlan::default(),
+        (None, None, Some(recorded)) => {
+            let existing = list()?;
+            ShimPlan {
+                targets: recorded
+                    .iter()
+                    .filter(|t| has_distro(&existing, &t.distro))
+                    .cloned()
+                    .collect(),
+                skipped: Vec::new(),
+            }
+        }
+        (None, None, None) => one(default_target()?),
     })
 }
 
@@ -112,7 +180,8 @@ mod imp {
     use std::io::Write as _;
     use std::os::windows::process::CommandExt as _;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Output, Stdio};
+    use std::time::{Duration, Instant};
 
     use anyhow::{Context as _, Result, anyhow, bail, ensure};
     use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
@@ -130,8 +199,9 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, SHIM_MARKER, has_distro, parse_distro_list, path_with, path_without,
-        protocol_command, render_shim, same_distro,
+        CLI_EXE, GUI_EXE, PUBLISHER, SHIM_MARKER, has_distro, parse_default_distro,
+        parse_distro_list, path_with, path_without, protocol_command, render_shim, same_distro,
+        uninstall_command,
     };
     use crate::registry::{self, Kind};
     use crate::spec::Context;
@@ -143,13 +213,20 @@ mod imp {
     pub const PROTOCOL_KEY: &str = r"Software\Classes\toastback";
     pub const PROTOCOL_COMMAND_KEY: &str = r"Software\Classes\toastback\shell\open\command";
     pub const ENV_KEY: &str = "Environment";
+    /// The Apps & Features entry. Its name is the winget manifest's `ProductCode`.
+    pub const APP_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Toastback";
+    /// `wsl.exe -l`: doesn't start a distro, so it's quick unless WSL itself is stuck.
+    const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+    /// One command in a distro, which may have to boot first. `install` runs unattended under
+    /// winget, so a stuck distro must not hang it.
+    const SHIM_TIMEOUT: Duration = Duration::from_secs(120);
 
     pub fn aumid_key() -> String {
         format!(r"Software\Classes\AppUserModelId\{AUMID}")
     }
 
     pub struct Options<'a> {
-        /// A distro name, `all`, `none`, or `None` for "the calling distro, else all".
+        /// A distro name, `all`, `default`, `none`, or `None`: see [`super::shim_targets`].
         pub wsl: Option<&'a str>,
         pub add_to_path: bool,
     }
@@ -161,16 +238,28 @@ mod imp {
             Ok(d) => Ok(d.clone()),
             Err(e) => Err(anyhow!("{e:#}")),
         };
+        let previous = store.install_record()?;
         // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
         // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
-        let targets = match super::shim_targets(opts.wsl, ctx, listed) {
-            Ok(t) => t,
+        let plan = super::shim_targets(
+            opts.wsl,
+            ctx,
+            previous.as_ref().map(|r| r.shims.as_slice()),
+            listed,
+            default_distro,
+        );
+        let plan = match plan {
+            Ok(p) => p,
             Err(e) if opts.wsl.is_none() => {
                 errln!("warning: no WSL shim written: {e:#}");
-                Vec::new()
+                super::ShimPlan::default()
             }
             Err(e) => return Err(e),
         };
+        for d in &plan.skipped {
+            outln!("skipped {d}: it's Docker Desktop's (name it with --wsl to include it)");
+        }
+        let targets = plan.targets;
         // both exes ship side by side; install from whichever one is running
         let me = std::env::current_exe()?;
         let src_dir = me.parent().context("exe has no directory")?;
@@ -206,9 +295,12 @@ mod imp {
             &protocol_command(&exe.to_string_lossy()),
             Kind::Plain,
         )?;
-        outln!("registered the toastback:// handler and the notification app id");
+        register_app(store, version)?;
+        outln!(
+            "registered the toastback:// handler, the notification app id and the Apps & Features entry"
+        );
 
-        let mut record = store.install_record()?.unwrap_or_default();
+        let mut record = previous.unwrap_or_default();
         // forget shims in distros that were removed since (`wsl --unregister`)
         if let Ok(existing) = &distros {
             record.shims.retain(|t| has_distro(existing, &t.distro));
@@ -243,6 +335,37 @@ mod imp {
         record.exe = exe.to_string_lossy().into_owned();
         store.save_install_record(&record)?;
         Ok(())
+    }
+
+    /// The entry winget and Apps & Features use to see the version and to uninstall.
+    fn register_app(store: &Store, version: &str) -> Result<()> {
+        let exe = store.installed_exe();
+        let exe_str = exe.to_string_lossy();
+        let uninstall = uninstall_command(&exe_str);
+        let values = [
+            ("DisplayName", "toastback"),
+            ("DisplayVersion", version),
+            ("Publisher", PUBLISHER),
+            ("DisplayIcon", &exe_str),
+            ("UninstallString", &uninstall),
+            ("QuietUninstallString", &uninstall),
+            ("URLInfoAbout", env!("CARGO_PKG_REPOSITORY")),
+        ];
+        let bin = store.bin_dir();
+        let bin_str = bin.to_string_lossy();
+        registry::set_string(APP_KEY, "InstallLocation", &bin_str, Kind::Plain)?;
+        for (name, value) in values {
+            registry::set_string(APP_KEY, name, value, Kind::Plain)?;
+        }
+        registry::set_dword(APP_KEY, "NoModify", 1)?;
+        registry::set_dword(APP_KEY, "NoRepair", 1)?;
+        let bytes: u64 = fs::read_dir(&bin)?
+            .flatten()
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        let kb = u32::try_from(bytes / 1024).unwrap_or(u32::MAX);
+        registry::set_dword(APP_KEY, "EstimatedSize", kb)
     }
 
     /// `*.old-<pid>` files left over from replacing an exe that was running.
@@ -309,16 +432,64 @@ mod imp {
         }
     }
 
-    pub fn list_distros() -> Result<Vec<String>> {
-        let out = Command::new("wsl.exe")
-            .args(["-l", "-q"])
+    /// Wait for a child with piped stdout and stderr, and kill it after `limit`.
+    pub(super) fn wait_limited(mut child: Child, limit: Duration, what: &str) -> Result<Output> {
+        fn drain(
+            pipe: Option<impl std::io::Read + Send + 'static>,
+        ) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_end(&mut buf);
+                }
+                buf
+            })
+        }
+        let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if start.elapsed() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                // not joining the readers: whatever the child started may still hold the pipes
+                bail!("{what}: no answer after {} s", limit.as_secs());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        Ok(Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        })
+    }
+
+    /// Stdout of `wsl.exe <args>`.
+    fn wsl_list(args: &[&str]) -> Result<Vec<u8>> {
+        let what = format!("wsl.exe {}", args.join(" "));
+        let child = Command::new("wsl.exe")
+            .args(args)
             .env("WSL_UTF8", "1")
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .context("run wsl.exe -l -q")?;
-        ensure!(out.status.success(), "wsl.exe -l -q failed");
-        Ok(parse_distro_list(&out.stdout))
+            .spawn()
+            .with_context(|| format!("run {what}"))?;
+        let out = wait_limited(child, LIST_TIMEOUT, &what)?;
+        ensure!(out.status.success(), "{what} failed");
+        Ok(out.stdout)
+    }
+
+    pub fn list_distros() -> Result<Vec<String>> {
+        Ok(parse_distro_list(&wsl_list(&["-l", "-q"])?))
+    }
+
+    /// The distro `wsl.exe` starts by default, if there is one.
+    pub fn default_distro() -> Result<Option<String>> {
+        Ok(parse_default_distro(&wsl_list(&["-l", "-v"])?))
     }
 
     /// Run `sh -c script` in a distro, optionally feeding `stdin`. Returns stdout.
@@ -344,7 +515,8 @@ mod imp {
         if let Some(input) = stdin {
             child.stdin.take().unwrap().write_all(input.as_bytes())?;
         }
-        let out = child.wait_with_output()?;
+        let what = format!("wsl.exe -d {}", t.distro);
+        let out = wait_limited(child, SHIM_TIMEOUT, &what)?;
         if !out.status.success() {
             bail!(
                 "exit {:?}: {}",
@@ -420,6 +592,7 @@ mod imp {
         }
         registry::delete_tree(&aumid_key())?;
         registry::delete_tree(PROTOCOL_KEY)?;
+        registry::delete_tree(APP_KEY)?;
         outln!("removed the registry keys");
         store.remove_install_record()?;
 
@@ -629,29 +802,152 @@ mod tests {
             user: Some("g".into()),
             cwd: None,
         };
-        let list = || Ok(vec!["ubuntu".to_string(), "Debian".to_string()]);
+        let list = || {
+            Ok(vec![
+                "ubuntu".to_string(),
+                "Debian".to_string(),
+                "docker-desktop".to_string(),
+            ])
+        };
+        let default = || Ok(Some("Debian".to_string()));
         let t = |d: &str, u: Option<&str>| ShimTarget {
             distro: d.into(),
             user: u.map(Into::into),
         };
-        assert_eq!(
-            shim_targets(Some("all"), &ctx, list).unwrap(),
-            [t("ubuntu", Some("g")), t("Debian", None)]
+        let targets = |wsl, ctx: &Context, recorded| {
+            shim_targets(wsl, ctx, recorded, list, default)
+                .unwrap()
+                .targets
+        };
+        let plan = shim_targets(Some("all"), &ctx, None, list, default).unwrap();
+        assert_eq!(plan.targets, [t("ubuntu", Some("g")), t("Debian", None)]);
+        assert_eq!(plan.skipped, ["docker-desktop"]);
+        // the calling distro needs neither a listing nor the default
+        let plan = shim_targets(
+            None,
+            &ctx,
+            None,
+            || panic!("no listing needed"),
+            || panic!("no default needed"),
         );
+        assert_eq!(plan.unwrap().targets, [t("Ubuntu", Some("g"))]);
+        assert_eq!(targets(Some("Debian"), &ctx, None), [t("Debian", None)]);
+        assert!(targets(Some("none"), &ctx, None).is_empty());
+        // named explicitly, Docker's distro is fine
         assert_eq!(
-            shim_targets(None, &ctx, || panic!("no listing needed")).unwrap(),
-            [t("Ubuntu", Some("g"))]
-        );
-        assert_eq!(
-            shim_targets(Some("Debian"), &ctx, list).unwrap(),
-            [t("Debian", None)]
-        );
-        assert!(shim_targets(Some("none"), &ctx, list).unwrap().is_empty());
-        assert_eq!(
-            shim_targets(None, &Context::default(), list).unwrap(),
-            [t("ubuntu", None), t("Debian", None)]
+            targets(Some("docker-desktop"), &ctx, None),
+            [t("docker-desktop", None)]
         );
         assert!(has_distro(&list().unwrap(), "UBUNTU"));
+    }
+
+    #[test]
+    fn shim_targets_default_distro() {
+        let none = Context::default();
+        let in_debian = Context {
+            distro: Some("debian".into()),
+            user: Some("g".into()),
+            cwd: None,
+        };
+        let no_list = || -> Result<Vec<String>> { panic!("no listing needed") };
+        let default = |d: &'static str| move || Ok(Some(d.to_string()));
+        let t = |d: &str, u: Option<&str>| ShimTarget {
+            distro: d.into(),
+            user: u.map(Into::into),
+        };
+        // a first install from Windows, with or without `--wsl default`
+        for wsl in [None, Some("default")] {
+            let plan = shim_targets(wsl, &none, None, no_list, default("Debian")).unwrap();
+            assert_eq!(plan.targets, [t("Debian", None)]);
+        }
+        // run from the default distro, it's the calling user's
+        let plan = shim_targets(
+            Some("default"),
+            &in_debian,
+            None,
+            no_list,
+            default("Debian"),
+        );
+        assert_eq!(plan.unwrap().targets, [t("Debian", Some("g"))]);
+        // Docker's distro as the default, or no distro at all: an error naming the way out
+        let e = shim_targets(None, &none, None, no_list, default("docker-desktop")).unwrap_err();
+        assert!(e.to_string().contains("--wsl NAME"), "{e}");
+        let e = shim_targets(None, &none, None, no_list, || Ok(None)).unwrap_err();
+        assert!(e.to_string().contains("no default distro"), "{e}");
+    }
+
+    #[test]
+    fn shim_targets_reuse_the_install_record() {
+        let none = Context::default();
+        let no_default = || -> Result<Option<String>> { panic!("no default needed") };
+        let t = |d: &str, u: Option<&str>| ShimTarget {
+            distro: d.into(),
+            user: u.map(Into::into),
+        };
+        let recorded = [t("Ubuntu", Some("g")), t("Removed", None)];
+        let list = || Ok(vec!["ubuntu".to_string(), "Debian".to_string()]);
+        // users stay as recorded; distros that no longer exist drop out
+        let plan = shim_targets(None, &none, Some(&recorded), list, no_default).unwrap();
+        assert_eq!(plan.targets, [t("Ubuntu", Some("g"))]);
+        // `--wsl none` earlier: stays none, without even asking WSL
+        let no_list = || -> Result<Vec<String>> { panic!("no listing needed") };
+        let plan = shim_targets(None, &none, Some(&[]), no_list, no_default).unwrap();
+        assert_eq!(plan, ShimPlan::default());
+        // an explicit --wsl wins
+        let default = || Ok(Some("Debian".to_string()));
+        let plan = shim_targets(Some("default"), &none, Some(&recorded), list, default).unwrap();
+        assert_eq!(plan.targets, [t("Debian", None)]);
+    }
+
+    #[test]
+    fn default_distro_from_the_verbose_list() {
+        let list = "  NAME             STATE      VERSION\n* FedoraLinux-44   Running    2\n  docker-desktop   Stopped    2\n";
+        let utf16: Vec<u8> = list.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(
+            parse_default_distro(&utf16).as_deref(),
+            Some("FedoraLinux-44")
+        );
+        assert_eq!(
+            parse_default_distro(list.as_bytes()).as_deref(),
+            Some("FedoraLinux-44")
+        );
+        assert_eq!(parse_default_distro(b"  NAME  STATE  VERSION\n"), None);
+        assert_eq!(parse_default_distro(b""), None);
+        assert!(is_docker_distro("docker-desktop-data"));
+        assert!(is_docker_distro("Docker-Desktop"));
+        assert!(!is_docker_distro("Ubuntu"));
+    }
+
+    #[test]
+    fn uninstall_command_quotes_the_path() {
+        assert_eq!(
+            uninstall_command(r"C:\Users\A B\toastback.exe"),
+            r#""C:\Users\A B\toastback.exe" uninstall"#
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wait_limited_returns_output_and_kills_on_timeout() {
+        let spawn = |args: &[&str]| {
+            std::process::Command::new("cmd.exe")
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let limit = std::time::Duration::from_secs(20);
+        let out = imp::wait_limited(spawn(&["/d", "/c", "echo hi"]), limit, "echo").unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hi"));
+
+        let short = std::time::Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let e = imp::wait_limited(spawn(&["/d", "/c", "ping -n 30 127.0.0.1"]), short, "ping");
+        assert!(e.unwrap_err().to_string().contains("no answer"));
+        assert!(started.elapsed() < limit);
     }
 
     #[test]
