@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A clicked notification's `env` values are removed from its pending file at once, instead of staying until it expires.
+
+### Fixed
+
+- An image that can't be deleted (in use) no longer stops `prune`, `remove` or `clear` from deleting the other images,
+  and `prune` tries it again later.
+- A toast that fails to show no longer leaves its pending file and cached images behind.
+- `show` exits 3, not 2, when it can't write to the image cache.
+- `validate` reads `icon` and `image`, so one that `show` couldn't read no longer passes.
+- `clear` no longer counts files it leaves alone, and names them.
+
+### Changed
+
 - `install --wsl NAME` refuses a distro that doesn't exist, and `install --wsl ...` exits with an error when a shim it
   was asked for can't be written (it used to warn and exit 0).
 - `install --wsl none` removes the shims of earlier installs.

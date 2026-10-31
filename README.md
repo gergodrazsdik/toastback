@@ -264,7 +264,8 @@ can't run in a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths),
 use `pwsh`.
 A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
 otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
-names of its `env` variables, not their values.
+names of its `env` variables, not their values. The values stay in plain text in
+`%LOCALAPPDATA%\toastback\pending` until the notification is clicked or expires, so prefer short-lived tokens.
 
 A program a callback leaves running in the background (`start /b server.exe`, `Start-Process -NoNewWindow`,
 `server &`) should send its output elsewhere (`> server.log 2>&1`): toastback reads the callback's output only until

@@ -356,6 +356,14 @@ impl Spec {
             .or(self.default.as_ref())
     }
 
+    /// Drop the `env` values of all callbacks (they may be tokens).
+    pub fn forget_env(&mut self) {
+        let buttons = self.buttons.iter_mut().filter_map(|b| b.run.as_mut());
+        for run in buttons.chain(self.default.as_mut()) {
+            run.env.clear();
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Some(id) = &self.id {
             ensure!(

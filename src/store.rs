@@ -194,8 +194,8 @@ impl Store {
                 }
             }
         }
-        self.remove_cached(&removed)?;
-        failed.map_or(Ok(()), Err)
+        let (_, cache_error) = self.remove_cached(&removed);
+        failed.or(cache_error).map_or(Ok(()), Err)
     }
 
     /// Take the click for the notification shown with `token`: mark it done, atomically, so two
@@ -218,6 +218,8 @@ impl Store {
         }
         p.done = true;
         p.dialog_open = false;
+        // the caller has its copy; what's left only has to recognize a second click
+        p.spec.forget_env();
         self.write_pending(&p)?;
         Ok(Claim::Claimed)
     }
@@ -274,16 +276,19 @@ impl Store {
         let Some(_lock) = lock_file(&self.pending_lock(), Duration::ZERO)? else {
             return Ok(Vec::new());
         };
-        let mut pruned = Vec::new();
-        for id in candidates {
-            // a file that can't be deleted now (in use) is tried again next time
-            if self.expired(&id, now) && remove_if_exists(&self.pending_file(&id)).is_ok() {
-                pruned.push(id);
-            }
-        }
-        let ids: Vec<&str> = pruned.iter().map(String::as_str).collect();
-        self.remove_cached(&ids)?;
-        Ok(pruned)
+        let expired: Vec<&str> = candidates
+            .iter()
+            .map(String::as_str)
+            .filter(|id| self.expired(id, now))
+            .collect();
+        // Images first: the pending file is what brings prune back, so one with an image that
+        // can't be deleted now (in use) stays until a later run gets it.
+        let (stuck, _) = self.remove_cached(&expired);
+        Ok(expired
+            .into_iter()
+            .filter(|id| !stuck.contains(id) && remove_if_exists(&self.pending_file(id)).is_ok())
+            .map(str::to_string)
+            .collect())
     }
 
     fn expired(&self, id: &str, now: u64) -> bool {
@@ -310,9 +315,8 @@ impl Store {
         self.pending_dir().join(".lock")
     }
 
-    /// Copy an image into the cache as `<id>-<kind>.<ext>`, returning the copy's path.
-    pub fn cache_image(&self, id: &str, kind: &str, src: &str) -> Result<PathBuf> {
-        let bytes = fs::read(src).with_context(|| format!("{kind}: cannot read {src}"))?;
+    /// Write the image read from `src` into the cache as `<id>-<kind>.<ext>`, returning the path.
+    pub fn cache_image(&self, id: &str, kind: &str, src: &str, bytes: &[u8]) -> Result<PathBuf> {
         // `bell.` has an empty extension, and Windows would drop the dot from `<id>-icon.`
         let ext = Path::new(src)
             .extension()
@@ -320,7 +324,7 @@ impl Store {
             .filter(|e| !e.is_empty())
             .map(str::to_ascii_lowercase)
             .unwrap_or_else(|| "png".into());
-        self.cache_bytes(id, kind, &ext, &bytes)
+        self.cache_bytes(id, kind, &ext, bytes)
     }
 
     /// Write image bytes into the cache as `<id>-<kind>.<ext>`, returning the file's path.
@@ -331,25 +335,30 @@ impl Store {
         Ok(dest)
     }
 
-    /// Delete the cached images of these notifications, in one pass over the cache dir.
-    fn remove_cached(&self, ids: &[&str]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let Ok(entries) = fs::read_dir(self.cache_dir()) else {
-            return Ok(());
+    /// Delete the cached images of these notifications, in one pass over the cache dir. A file
+    /// that can't be deleted doesn't stop the others. Returns the ids with an image left, and the
+    /// first error.
+    fn remove_cached<'a>(&self, ids: &[&'a str]) -> (Vec<&'a str>, Option<anyhow::Error>) {
+        let mut stuck = Vec::new();
+        let mut first_error = None;
+        let entries = match fs::read_dir(self.cache_dir()) {
+            Ok(entries) if !ids.is_empty() => entries,
+            _ => return (stuck, first_error),
         };
-        for entry in entries {
-            let path = entry?.path();
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| ids.iter().any(|id| is_cached_for(n, id)))
+        for path in entries.flatten().map(|entry| entry.path()) {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let owners = ids.iter().copied().filter(|id| is_cached_for(name, id));
+            let owners: Vec<&str> = owners.collect();
+            if !owners.is_empty()
+                && let Err(e) = remove_if_exists(&path)
             {
-                remove_if_exists(&path)?;
+                stuck.extend(owners);
+                first_error.get_or_insert(e);
             }
         }
-        Ok(())
+        (stuck, first_error)
     }
 
     /// Append an event to the log: `{"ts": …, "event": …, …fields}`. Rotates at ~5 MB.
@@ -635,9 +644,7 @@ mod tests {
         assert!(!is_cached_for("Deploy-iconx.png", "deploy"));
         assert!(!is_cached_for("d", "deploy"));
         // a source without an extension (or with an empty one) is cached as PNG
-        let src = s.root().join("bell.");
-        fs::write(&src, b"x").unwrap();
-        let cached = s.cache_image("n1", ICON, &src.to_string_lossy()).unwrap();
+        let cached = s.cache_image("n1", ICON, "dir/bell.", b"x").unwrap();
         assert!(cached.ends_with("n1-icon.png"), "{}", cached.display());
         s.remove_pendings(&["n1", "build.x"]).unwrap();
         assert!(!cached.exists());
@@ -748,6 +755,72 @@ mod tests {
         s.save_pending(&late).unwrap();
         s.set_dialog_open("late", &late.token, 150).unwrap();
         assert!(!s.load_pending("late").unwrap().unwrap().dialog_open);
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn an_image_that_cant_be_deleted_stops_nothing_else() {
+        // a directory can't be removed as a file, like an image another program holds open
+        let stuck = |s: &Store, name: &str| fs::create_dir_all(s.cache_dir().join(name)).unwrap();
+        let s = temp_store("stuck-prune");
+        for id in ["a", "b", "c"] {
+            s.save_pending(&pending(id, 100)).unwrap();
+        }
+        stuck(&s, "b-icon.png");
+        fs::write(s.cache_dir().join("a-icon.png"), b"x").unwrap();
+        fs::write(s.cache_dir().join("c-icon.png"), b"x").unwrap();
+        // the others go, and the stuck one's pending file stays so a later run tries again
+        assert_eq!(s.prune(200).unwrap(), ["a", "c"]);
+        assert!(!s.cache_dir().join("a-icon.png").exists());
+        assert!(!s.cache_dir().join("c-icon.png").exists());
+        assert_eq!(s.pending_ids().unwrap(), ["b"]);
+        fs::remove_dir(s.cache_dir().join("b-icon.png")).unwrap();
+        assert_eq!(s.prune(200).unwrap(), ["b"]);
+        fs::remove_dir_all(s.root()).unwrap();
+
+        let s = temp_store("stuck-remove");
+        for id in ["a", "b", "c"] {
+            s.save_pending(&pending(id, 100)).unwrap();
+        }
+        stuck(&s, "b-icon.png");
+        fs::write(s.cache_dir().join("a-icon.png"), b"x").unwrap();
+        fs::write(s.cache_dir().join("c-icon.png"), b"x").unwrap();
+        assert!(s.remove_pendings(&["a", "b", "c"]).is_err());
+        assert!(s.pending_ids().unwrap().is_empty());
+        assert!(!s.cache_dir().join("a-icon.png").exists());
+        assert!(!s.cache_dir().join("c-icon.png").exists());
+        fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn a_claim_forgets_env_values() {
+        let s = temp_store("claim-env");
+        let mut p = pending("x", 100);
+        p.spec.default = Some(crate::spec::Run {
+            wsl: Some(crate::spec::WslCommand::Shell("gh".into())),
+            env: [("GH_TOKEN".to_string(), "ghp_secret".to_string())].into(),
+            ..Default::default()
+        });
+        p.spec.buttons = vec![crate::spec::Button {
+            id: "b".into(),
+            label: "B".into(),
+            run: p.spec.default.clone(),
+            ..Default::default()
+        }];
+        s.save_pending(&p).unwrap();
+        let raw = || fs::read_to_string(s.pending_file("x")).unwrap();
+        assert!(raw().contains("ghp_secret"));
+        assert!(matches!(
+            s.claim("x", &p.token, 50, false).unwrap(),
+            Claim::Claimed
+        ));
+        assert!(!raw().contains("ghp_secret"), "{}", raw());
+        // still readable, and a second click is still recognized
+        assert!(s.load_pending("x").unwrap().unwrap().done);
+        assert!(matches!(
+            s.claim("x", &p.token, 50, false).unwrap(),
+            Claim::Done
+        ));
         fs::remove_dir_all(s.root()).unwrap();
     }
 
