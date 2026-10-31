@@ -14,7 +14,7 @@ id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
 ```
 
 - Single self-contained exe, no runtime. Windows 10 22H2+ / Windows 11, per-user install, no admin rights.
-- Buttons run commands in WSL (`bash -lc` or an argv), cmd, PowerShell, any exe, or open a URL/file.
+- Buttons run commands in WSL (a login shell or an argv), cmd, PowerShell, any exe, or open a URL/file.
 - Click a toast's text to open a details dialog with the same buttons, or use `mode: dialog` for prompts
   that must not be missed.
 - Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
@@ -248,7 +248,7 @@ Exactly one of:
 
 | Form | Runs |
 |---|---|
-| `{"wsl": "string"}` | `wsl.exe -d <distro> -u <user> --cd <cwd> --exec bash -lc "<string>"`: your login profile, so your PATH |
+| `{"wsl": "string"}` | `wsl.exe -d <distro> -u <user> --cd <cwd> --exec …` running `bash -lc "<string>"`, or `sh -lc "<string>"` in a distro without bash: your login profile, so your PATH |
 | `{"wsl": ["argv", …]}` | the argv directly, no shell (and no login profile) |
 | `{"cmd": "string"}` | `cmd.exe /d /s /c "<string>"` |
 | `{"pwsh": "string"}` | PowerShell 7 (`pwsh`), else Windows PowerShell, via `-EncodedCommand` (no quoting issues) |
@@ -311,8 +311,8 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.
 - **Distros without bash (Alpine):** `install.sh` (which uses `wget` if there's no `curl`) and the `toastback` command
-  need only POSIX `sh`, whatever your interactive shell is. A `{"wsl": "string"}` callback runs in `bash`, so there use
-  the argv form, `{"wsl": ["sh", "-lc", "string"]}`.
+  need only POSIX `sh`, whatever your interactive shell is. A `{"wsl": "string"}` callback runs in `sh` there, so a
+  string that relies on bash-only features, such as arrays, can fail.
 - **toastback isn't code-signed** (a deliberate choice, see [docs/decisions/004-m4.md](docs/decisions/004-m4.md)).
   With Windows 11's **Smart App Control** turned on, Windows may block unsigned apps it doesn't know yet ("An
   Application Control policy has blocked this file"; `install.sh` reports it). Smart App Control has no per-app

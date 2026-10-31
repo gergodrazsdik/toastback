@@ -126,7 +126,8 @@ covered by the smoke job, so here they only need to be checked once.
 
 44. **Shells:** `sh`, `bash`, `zsh` and `dash` (where installed) each install through
     `cat scripts/install.sh | TOASTBACK_BASE_URL=<assets> <shell>`, and in a distro without bash (Alpine) the shim shows
-    a toast, also with `WSL_DISTRO_NAME=` set but empty.
+    a toast, also with `WSL_DISTRO_NAME=` set but empty. A `{"wsl": "echo \"$0\""}` callback logs `bash`, and `sh` with
+    `"distro"` set to a distro without bash.
 
 ## Uninstall
 

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `install.sh` and the WSL shim run in plain POSIX `sh`, so they work in distros without bash (Alpine), and `install.sh`
   uses `wget` when there's no `curl`. Run it with `sh install.sh`; `bash install.sh` still works.
+- A `{"wsl": "string"}` callback runs in `sh -lc` in a distro without bash. With bash it runs in `bash -lc` as before.
 - `open` targets and `exe` programs accept WSL paths: `/mnt/c/...`, `/home/...`, `./x` and `../x`.
 
 ### Changed
