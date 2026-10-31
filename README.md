@@ -252,8 +252,8 @@ Exactly one of:
 | `{"wsl": ["argv", …]}` | the argv directly, no shell (and no login profile) |
 | `{"cmd": "string"}` | `cmd.exe /d /s /c "<string>"` |
 | `{"pwsh": "string"}` | PowerShell 7 (`pwsh`), else Windows PowerShell, via `-EncodedCommand` (no quoting issues) |
-| `{"exe": ["C:\\path\\x.exe", "arg"]}` | the program directly |
-| `{"open": "url-or-path"}` | the default app for a URL, file or folder (Windows `%VAR%`s like `%USERPROFILE%` are expanded in paths, not in URLs) |
+| `{"exe": ["C:\\path\\x.exe", "arg"]}` | the program directly (a Windows or WSL path, or a name on the Windows PATH) |
+| `{"open": "url-or-path"}` | the default app for a URL, file or folder, by Windows or WSL path (Windows `%VAR%`s like `%USERPROFILE%` are expanded in paths, not in URLs) |
 
 Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override the context) and `"timeout": "5m"`
 (the callback, and everything it started, is killed after it; processes detached on purpose with `nohup` or
@@ -261,10 +261,12 @@ Plus optional modifiers: `"cwd"`, `"env": {}`, `"distro"`, `"user"` (override th
 resolved against the directory you ran `toastback` in (from cmd or PowerShell: for Windows-side callbacks only),
 and `~` means your home directory in `wsl` callbacks only. `cmd` (and an `exe` that is a `.bat` or `.cmd` script)
 can't run in a WSL directory outside `/mnt/<drive>` (cmd.exe refuses UNC paths), so `toastback` rejects that spec;
-use `pwsh`.
+use `pwsh`. In `exe` and `open`, a path starting with `/`, `./` or `../` is a WSL path, resolved like `cwd`; a bare name
+like `notes.txt` is left to Windows, so set `cwd` if it's a file.
 A `distro` other than yours runs as that distro's default user in its home directory, unless `user`/`cwd` say
 otherwise (also when the spec's `context` names another distro). The log records each callback's command and the
-names of its `env` variables, not their values.
+names of its `env` variables, not their values. The values stay in plain text in
+`%LOCALAPPDATA%\toastback\pending` until the notification is clicked or expires, so prefer short-lived tokens.
 
 A program a callback leaves running in the background (`start /b server.exe`, `Start-Process -NoNewWindow`,
 `server &`) should send its output elsewhere (`> server.log 2>&1`): toastback reads the callback's output only until

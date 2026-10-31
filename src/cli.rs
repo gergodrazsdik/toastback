@@ -8,9 +8,9 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 
 use crate::VERSION;
-#[cfg(windows)]
-use crate::spec::Spec;
 use crate::spec::{Context, Mode, QuickFlags, Scenario};
+#[cfg(windows)]
+use crate::spec::{Spec, is_safe_id};
 #[cfg(windows)]
 use crate::{activate, doctor, examples, install, show, toast};
 
@@ -369,10 +369,17 @@ pub fn run(cli: Cli) -> Result<u8> {
         Command::Clear => {
             let _ = toast::remove_all();
             let ids = store.pending_ids()?;
-            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            // a file toastback can't have written (a copy, say) isn't one of its notifications
+            let (ids, other): (Vec<&str>, Vec<&str>) = ids
+                .iter()
+                .map(String::as_str)
+                .partition(|id| is_safe_id(id));
             store.remove_pendings(&ids)?;
             store.log("cleared", serde_json::json!({ "ids": ids }))?;
             outln!("removed {} notification(s)", ids.len());
+            for id in other {
+                errln!("toastback: left {id}.json alone: not a notification id");
+            }
             Ok(0)
         }
         Command::Log { n, id } => {

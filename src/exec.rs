@@ -74,6 +74,7 @@ pub fn plan(
 ) -> Result<Plan> {
     let mut env: Vec<(String, String)> = vars.to_vec();
     env.extend(run.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let path = |p: &str| program_path(p, ctx);
 
     let windows_cwd = || -> Result<Option<String>> {
         let Some(c) = run.cwd.as_deref() else {
@@ -124,11 +125,7 @@ pub fn plan(
                 RunKind::WslArgv(a) => args.extend(a.iter().cloned()),
                 _ => unreachable!(),
             }
-            let names: Vec<String> = env.iter().map(|(k, _)| format!("{k}/u")).collect();
-            let wslenv = match wslenv.filter(|w| !w.is_empty()) {
-                Some(w) => format!("{w}:{}", names.join(":")),
-                None => names.join(":"),
-            };
+            let wslenv = merge_wslenv(&mut env, wslenv);
             env.push(("WSLENV".into(), wslenv));
             process("wsl.exe", args, env, None)
         }
@@ -164,13 +161,57 @@ pub fn plan(
             if runs_in_cmd(&argv[0]) {
                 refuse_unc_for_cmd(cwd.as_deref())?;
             }
-            process(&argv[0], argv[1..].to_vec(), env, cwd)
+            process(&path(&argv[0])?, argv[1..].to_vec(), env, cwd)
         }
         RunKind::Open(target) => Plan::Open {
-            target: target.into(),
+            target: path(target)?,
             cwd: windows_cwd()?,
         },
     })
+}
+
+/// The `WSLENV` for a `wsl` callback: the current value, then one the run's `env` sets (taken out of
+/// `env`), then everything else in `env` with `/u` (Windows → Linux). A variable the run lists
+/// itself keeps its own flags.
+fn merge_wslenv(env: &mut Vec<(String, String)>, current: Option<&str>) -> String {
+    let is_wslenv = |k: &str| k.eq_ignore_ascii_case("WSLENV");
+    let own = env
+        .iter()
+        .find(|(k, _)| is_wslenv(k))
+        .map(|(_, v)| v.clone());
+    env.retain(|(k, _)| !is_wslenv(k));
+    let listed = |name: &str| {
+        own.iter()
+            .flat_map(|o| o.split(':'))
+            .any(|e| e.split('/').next() == Some(name))
+    };
+    let names = env
+        .iter()
+        .filter(|(k, _)| !listed(k))
+        .map(|(k, _)| format!("{k}/u"));
+    current
+        .into_iter()
+        .chain(own.as_deref())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .chain(names)
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The program of an `exe` or the target of an `open`: a Linux path becomes a Windows one. Anything
+/// else is left to Windows: `C:\…`, URLs, `%VAR%\…` and bare names (`notepad.exe`, found on PATH).
+fn program_path(p: &str, ctx: &Context) -> Result<String> {
+    if p.starts_with("./") || p.starts_with("../") {
+        if ctx.cwd.is_none() {
+            bail!("{p:?} is relative, and there's no caller directory to resolve it against");
+        }
+        return context::to_windows_path(p, ctx);
+    }
+    if p.starts_with('/') {
+        return context::to_windows_path(p, ctx);
+    }
+    Ok(p.to_string())
 }
 
 /// Check at show time what `plan` would reject at click time (a relative cwd with no caller
@@ -264,44 +305,80 @@ pub fn tail(bytes: &[u8]) -> String {
 /// Process output as text. wsl.exe writes its own messages ("There is no distribution with the
 /// supplied name", a proxy notice before the command's own output) in UTF-16LE; setting
 /// `WSL_UTF8` instead would leak into every Windows program the callback starts. Both can share a
-/// stream, so each line is decoded on its own: a UTF-16LE line has NULs at odd offsets (the high
-/// byte of its spaces, CR, LF and other ASCII-range characters, whatever the language), UTF-8
-/// has no NULs at all. Anything else is (lossy) UTF-8.
+/// stream, so it's decoded piece by piece. UTF-8 has no NULs at all, and UTF-16LE text of any
+/// language has them, in the high byte of its CR, LF and spaces.
+///
+/// Best effort where the bytes really are ambiguous: UTF-8 of even length with no line end,
+/// followed by UTF-16 (`ok` and U+6B6F are the same bytes), reads as UTF-16.
 pub fn decode_output(bytes: &[u8]) -> String {
-    if !bytes.contains(&0) {
-        return String::from_utf8_lossy(bytes).into_owned();
-    }
     let mut text = String::new();
     let mut rest = bytes;
     while !rest.is_empty() {
-        // the bytes up to the next LF byte tell the encodings apart
-        let line = rest
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(rest.len(), |i| i + 1);
-        let nul_at = |parity: usize| rest[..line].iter().skip(parity).step_by(2).any(|&b| b == 0);
-        let used = if nul_at(1) {
-            // UTF-16LE up to and including its LF unit
-            let (units, _) = rest.as_chunks::<2>();
-            let n = units
-                .iter()
-                .position(|u| *u == [b'\n', 0])
-                .map_or(units.len(), |i| i + 1);
-            text.push_str(&String::from_utf16le_lossy(&rest[..2 * n]));
-            2 * n
-        } else if nul_at(0) {
-            // UTF-16LE that starts a byte later (a cut, or text without a line end before it)
-            if rest[0] != 0 {
-                text.push_str(&String::from_utf8_lossy(&rest[..1]));
-            }
-            1
-        } else {
-            text.push_str(&String::from_utf8_lossy(&rest[..line]));
-            line
-        };
+        let used = decode_piece(rest, &mut text);
         rest = &rest[used..];
     }
     text
+}
+
+/// Decode the start of `rest` into `text`, and return how many bytes that took (at least one).
+fn decode_piece(rest: &[u8], text: &mut String) -> usize {
+    let nul_at = |parity: usize| (0..rest.len()).filter(move |&i| i % 2 == parity && rest[i] == 0);
+    if !rest.contains(&0) {
+        text.push_str(&String::from_utf8_lossy(rest));
+        return rest.len();
+    }
+    // A LF unit tells how the UTF-16 is aligned. Splitting on the LF byte alone wouldn't do: it's
+    // also the low byte of U+4E0A and U+040A. Without one, most NULs are high bytes.
+    let lf = rest.windows(2).position(|w| w == [b'\n', 0]);
+    let start_parity = lf.map_or_else(
+        || usize::from(nul_at(0).count() > nul_at(1).count()),
+        |i| i % 2,
+    );
+    let high_parity = 1 - start_parity;
+    // the high byte of the first ASCII-range character (U+4E00 has a NUL too, as its low byte)
+    let Some(high) = nul_at(high_parity).next() else {
+        return 1;
+    };
+    if high == 0 {
+        return 1; // a cut one byte into UTF-16: that character is lost
+    }
+    let before = &rest[..high - 1];
+    // Text in front of the UTF-16: it can't be aligned with it, or it's whole lines of UTF-8
+    if start_parity == 1 || before.ends_with(b"\n") {
+        if is_utf8_text(before) {
+            text.push_str(&String::from_utf8_lossy(before));
+            return before.len();
+        }
+        if start_parity == 1 {
+            text.push_str(&String::from_utf8_lossy(&rest[..1]));
+            return 1;
+        }
+    }
+    let whole_units = rest.len() & !1;
+    let end = lf.map_or_else(
+        // no line end: up to the last ASCII-range character, unless what follows isn't UTF-8
+        || {
+            let last = nul_at(high_parity)
+                .next_back()
+                .map_or(whole_units, |i| i + 1);
+            if is_utf8_text(&rest[last..]) {
+                last
+            } else {
+                whole_units
+            }
+        },
+        |i| i + 2,
+    );
+    text.push_str(&String::from_utf16le_lossy(&rest[..end]));
+    end
+}
+
+/// Valid UTF-8 without the control characters text doesn't have (ESC: terminal colours).
+fn is_utf8_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|s| {
+        s.chars()
+            .all(|c| !c.is_control() || matches!(c, '\t' | '\r' | '\n' | '\u{1b}'))
+    })
 }
 
 #[cfg(windows)]
@@ -917,6 +994,102 @@ mod tests {
 
     fn utf16le(s: &str) -> Vec<u8> {
         s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn output_decoding_with_lf_bytes_inside_characters() {
+        // U+4E0A and U+040A have 0x0A as their low byte, U+4E00 has a NUL as its low byte
+        for s in [
+            "在此计算机上找不到\r\n",
+            "上午\r\n",
+            "一上\r\n",
+            "上一个\r\n第二行\r\n",
+            "Њет\r\n",
+        ] {
+            assert_eq!(decode_output(&utf16le(s)), s);
+        }
+    }
+
+    #[test]
+    fn output_decoding_of_mixed_streams() {
+        let notice = "wsl: notice\r\n";
+        let mix = |before: &[u8], after: &[u8]| {
+            decode_output(&[before, &utf16le(notice), after].concat())
+        };
+        // whole UTF-8 lines of any length in front of it, and the odd-length text it can't be
+        assert_eq!(mix(b"abc\n", b""), format!("abc\n{notice}"));
+        assert_eq!(mix(b"ab\ncd\n", b""), format!("ab\ncd\n{notice}"));
+        assert_eq!(mix(b"abc", b""), format!("abc{notice}"));
+        assert_eq!(mix("grüß\n".as_bytes(), b"x"), format!("grüß\n{notice}x"));
+        // UTF-16 without a line end, then UTF-8
+        let joined = [utf16le("notice"), b"plain text\n".to_vec()].concat();
+        assert_eq!(decode_output(&joined), "noticeplain text\n");
+        // no line end at all, and a lone NUL: no panic, and the text stays
+        assert_eq!(decode_output(&utf16le("no line end")), "no line end");
+        assert_eq!(decode_output(&[0]), "");
+        assert_eq!(decode_output(b"a\0"), "a");
+    }
+
+    #[test]
+    fn programs_and_open_targets_take_linux_paths() {
+        let target = |json: &str, c: &Context| {
+            plan(&run(json), c, &[], None).map(|p| match p {
+                Plan::Open { target, .. } => target,
+                Plan::Process { program, .. } => program,
+            })
+        };
+        let c = ctx();
+        for (json, want) in [
+            (r#"{"open": "/mnt/c/Users/g/r.pdf"}"#, r"C:\Users\g\r.pdf"),
+            (
+                r#"{"open": "./r.pdf"}"#,
+                r"\\wsl.localhost\Ubuntu\home\g\app\r.pdf",
+            ),
+            (r#"{"exe": ["/mnt/c/tools/x.exe"]}"#, r"C:\tools\x.exe"),
+            // for Windows to find or expand
+            (
+                r#"{"open": "https://x.example/a/b"}"#,
+                "https://x.example/a/b",
+            ),
+            (r#"{"open": "%USERPROFILE%\\x"}"#, r"%USERPROFILE%\x"),
+            (r#"{"open": "notes.txt"}"#, "notes.txt"),
+            (r#"{"exe": ["notepad.exe"]}"#, "notepad.exe"),
+            (r#"{"exe": ["C:\\x.exe"]}"#, r"C:\x.exe"),
+        ] {
+            assert_eq!(target(json, &c).unwrap(), want, "{json}");
+        }
+        // reported at show time, not on the click
+        let none = Context::default();
+        assert!(target(r#"{"open": "./r.pdf"}"#, &none).is_err());
+        assert!(target(r#"{"exe": ["/home/g/x.exe"]}"#, &none).is_err());
+        assert!(check(&run(r#"{"open": "./r.pdf"}"#), &none).is_err());
+    }
+
+    #[test]
+    fn wslenv_from_the_run_is_merged() {
+        let wslenv = |json: &str, current| {
+            let p = plan(&run(json), &ctx(), &vars(), current).unwrap();
+            let Plan::Process { env, .. } = p else {
+                panic!()
+            };
+            let all: Vec<_> = env
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("WSLENV"))
+                .collect();
+            assert_eq!(all.len(), 1, "{all:?}");
+            all[0].1.clone()
+        };
+        assert_eq!(
+            wslenv(
+                r#"{"wsl": "x", "env": {"WSLENV": "TOKEN/p", "TOKEN": "t", "FOO": "b"}}"#,
+                Some("PATH/l")
+            ),
+            "PATH/l:TOKEN/p:TOASTBACK_ID/u:FOO/u"
+        );
+        assert_eq!(
+            wslenv(r#"{"wsl": "x", "env": {"wslenv": "A"}}"#, None),
+            "A:TOASTBACK_ID/u"
+        );
     }
 
     #[test]

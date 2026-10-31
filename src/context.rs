@@ -44,6 +44,14 @@ pub fn to_windows_path(p: &str, ctx: &Context) -> Result<String> {
             // no caller context (run without the shim): relative to this process's cwd
             return Ok(p.replace('/', "\\"));
         };
+        // a spec's `context` may name a Windows directory; `wsl` callbacks accept one too
+        if is_windows_path(cwd) {
+            let dir = cwd.trim_end_matches(['\\', '/']);
+            return Ok(format!(r"{dir}\{}", p.replace('/', "\\")));
+        }
+        if !cwd.starts_with('/') {
+            bail!("{p:?} is relative, and {cwd:?} isn't a directory it can be resolved against");
+        }
         format!("{cwd}/{p}")
     };
     let parts = normalize(&abs);
@@ -121,6 +129,40 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(to_windows_path(input, &c).unwrap(), want, "{input}");
         }
+    }
+
+    #[test]
+    fn caller_directory_forms() {
+        let at = |cwd: &str| Context {
+            distro: Some("D".into()),
+            user: None,
+            cwd: Some(cwd.into()),
+        };
+        assert_eq!(
+            to_windows_path("sub/a.png", &at(r"C:\proj\")).unwrap(),
+            r"C:\proj\sub\a.png"
+        );
+        assert_eq!(
+            to_windows_path("a.png", &at(r"\\srv\share")).unwrap(),
+            r"\\srv\share\a.png"
+        );
+        // absolute paths don't need it
+        assert_eq!(
+            to_windows_path("/home/a.png", &at("~/proj")).unwrap(),
+            r"\\wsl.localhost\D\home\a.png"
+        );
+        for cwd in ["~/proj", "proj"] {
+            assert!(to_windows_path("a.png", &at(cwd)).is_err(), "{cwd}");
+        }
+        // no distro is needed for a Windows directory
+        let no_distro = Context {
+            cwd: Some(r"C:\proj".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_windows_path("a.png", &no_distro).unwrap(),
+            r"C:\proj\a.png"
+        );
     }
 
     #[test]

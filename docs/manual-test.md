@@ -122,6 +122,9 @@ covered by the smoke job, so here they only need to be checked once.
 41. **Upgrade through winget:** with a lower version installed from a local manifest, `winget upgrade --manifest` installs
     the new one; `doctor` and Apps & Features show the new version, and a callback still runs.
 
+42. **Button text and paths:** `toastback --mode dialog` with a spec whose button is labelled `R&D` shows `R&D` on the
+    button. A toast with `{"open": "/mnt/c/Windows/win.ini"}` as its `default` opens that file when clicked.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

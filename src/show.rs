@@ -169,14 +169,13 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
         None => new_id().map_err(failed)?,
     };
     spec.id = Some(id.clone());
-    let cache = |kind: &str, src: &Option<String>| -> Result<Option<String>> {
+    // a path that can't be read is the spec's problem, a cache that can't be written isn't
+    let cache = |kind: &str, src: &Option<String>| -> Result<Option<String>, (u8, anyhow::Error)> {
         src.as_deref()
             .map(|p| {
-                let win = context::to_windows_path(p, &spec.context).context(kind.to_string())?;
-                Ok(store
-                    .cache_image(&id, kind, &win)?
-                    .to_string_lossy()
-                    .into_owned())
+                let (win, bytes) = read_image(kind, p, &spec.context).map_err(invalid)?;
+                let cached = store.cache_image(&id, kind, &win, &bytes).map_err(failed)?;
+                Ok(cached.to_string_lossy().into_owned())
             })
             .transpose()
     };
@@ -188,9 +187,9 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
                 .to_string_lossy()
                 .into_owned(),
         ),
-        None => cache(store::ICON, &spec.icon).map_err(invalid)?,
+        None => cache(store::ICON, &spec.icon)?,
     };
-    let image_path = cache(store::IMAGE, &spec.image).map_err(invalid)?;
+    let image_path = cache(store::IMAGE, &spec.image)?;
 
     let now = unix_now();
     let pending = Pending {
@@ -212,7 +211,10 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
                 image: pending.image_path.as_deref(),
             };
             let xml = toast::build_xml(&pending.spec, &id, &pending.token, &images);
-            toast::show(&xml, &id, pending.expires_at).map_err(failed)?;
+            if let Err(e) = toast::show(&xml, &id, pending.expires_at) {
+                let _ = store.remove_pending(&id);
+                return Err(failed(e));
+            }
         }
         Mode::Dialog => {
             // a separate process shows the dialog, so the caller returns right away
@@ -231,6 +233,13 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
     Ok(id)
 }
 
+/// The bytes of an `icon` or `image`, and the Windows path they came from.
+fn read_image(kind: &str, path: &str, ctx: &Context) -> Result<(String, Vec<u8>)> {
+    let win = context::to_windows_path(path, ctx).context(kind.to_string())?;
+    let bytes = std::fs::read(&win).with_context(|| format!("{kind}: cannot read {win}"))?;
+    Ok((win, bytes))
+}
+
 /// `validate`: parse and check one spec file, including that its images can be read.
 pub fn validate_file(file: &str, ctx: &Context) -> Result<()> {
     let args = ShowArgs {
@@ -241,8 +250,7 @@ pub fn validate_file(file: &str, ctx: &Context) -> Result<()> {
     let icon = spec.icon.as_ref().filter(|_| spec.stock_icon().is_none());
     for (kind, path) in [("icon", icon), ("image", spec.image.as_ref())] {
         if let Some(p) = path {
-            let win = context::to_windows_path(p, &spec.context).context(kind)?;
-            std::fs::metadata(&win).with_context(|| format!("{kind}: cannot read {win}"))?;
+            read_image(kind, p, &spec.context)?;
         }
     }
     Ok(())
@@ -313,6 +321,25 @@ mod tests {
             spec.default.unwrap().cwd.as_deref(),
             Some(r"C:\work\sub\dir")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_reads_the_images() {
+        let dir = std::env::temp_dir().join(format!("toastback-validate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec_with = |icon: &std::path::Path| {
+            let file = dir.join("spec.json");
+            let spec = serde_json::json!({"title": "t", "icon": icon});
+            std::fs::write(&file, spec.to_string()).unwrap();
+            validate_file(&file.to_string_lossy(), &Context::default())
+        };
+        // a directory exists, but no image can be read from it
+        assert!(spec_with(&dir).is_err());
+        let png = dir.join("a.png");
+        std::fs::write(&png, b"x").unwrap();
+        spec_with(&png).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
