@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `install --wsl NAME` refuses a distro that doesn't exist, and `install --wsl ...` exits with an error when a shim it
+  was asked for can't be written (it used to warn and exit 0).
+- `install --wsl none` removes the shims of earlier installs.
+
+### Fixed
+
+- `install` could wait forever for a program started in WSL that kept `wsl.exe`'s output open, despite the time limits.
+- `install` could run a `wsl.exe` planted next to the downloaded exe. It now runs `wsl.exe` and `cmd.exe` from System32.
+- A first install that couldn't write a shim (no WSL yet, Docker Desktop's distro as the default) no longer counts as
+  `--wsl none`: later installs and `winget upgrade` write the shim to the default distro.
+- A later install no longer writes shims again after `--wsl none`.
+- A failed or interrupted upgrade can no longer leave a missing or partly written exe.
+- `install --add-to-path` no longer claims a PATH entry you added yourself, so `uninstall` leaves it alone.
+- A damaged `install.json` no longer blocks `install` and `uninstall`, and `show` reports it instead of "not installed".
+- `install` warns when it can't update `toastback-cli.exe`, reports a failed PATH check as such, and shows `wsl.exe`'s
+  own error when the distro can't start.
+
 ## [1.3.0] - 2026-10-31
 
 ### Added

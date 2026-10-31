@@ -24,7 +24,9 @@ winget runs the same `install` as every other method, which already handles upgr
   adds a second one that shouldn't be touched. The default comes from the `*` in `wsl.exe -l -v`, since the header text
   is translated.
 - **A re-install from Windows without `--wsl` reuses the install record.** Otherwise each `winget upgrade` would undo a
-  `--wsl none` and leave shims in other distros outdated.
+  `--wsl none` and leave shims in other distros outdated. The record says so itself (`no_shims`), since a first install
+  that couldn't write a shim also lists none, and that one should try again. A record from 1.3.0 can't tell them apart:
+  an empty list there stays "none" until an install with `--wsl`.
 - **Docker Desktop's distros** (`docker-desktop*`) are left out of `all`, with a note. As the default distro, they
   mean no shim and a warning. Named explicitly, they're treated like any other.
 - **Time limits on `wsl.exe`** (30 s to list, 120 s per command in a distro), since an unattended install must not hang.

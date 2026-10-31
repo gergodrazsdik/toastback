@@ -77,8 +77,19 @@ pub struct InstallRecord {
     /// Distros (and users) that received a shim.
     #[serde(default)]
     pub shims: Vec<ShimTarget>,
+    /// `install --wsl none` was chosen, so a later install doesn't write shims on its own.
+    #[serde(default)]
+    pub no_shims: Option<bool>,
     #[serde(default)]
     pub path_added: bool,
+}
+
+impl InstallRecord {
+    /// Did the user choose no shims? A record from before `no_shims` can't tell that from a first
+    /// install that couldn't write one: an empty list there keeps meaning "none".
+    pub fn shims_declined(&self) -> bool {
+        self.no_shims.unwrap_or(self.shims.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,6 +832,19 @@ mod tests {
         s.log("shown", json!({"id": "a"})).unwrap();
         assert_eq!(s.read_log().unwrap().len(), 1);
         fs::remove_dir_all(s.root()).unwrap();
+    }
+
+    #[test]
+    fn shims_declined_reads_old_and_new_records() {
+        let record = |json: &str| serde_json::from_str::<InstallRecord>(json).unwrap();
+        let base = r#""version": "1", "installed_at": "t", "exe": "e""#;
+        let shim = r#""shims": [{"distro": "D", "user": null}]"#;
+        // written before `no_shims` existed
+        assert!(record(&format!("{{{base}}}")).shims_declined());
+        assert!(!record(&format!("{{{base}, {shim}}}")).shims_declined());
+        // written since: says so itself
+        assert!(!record(&format!(r#"{{{base}, "no_shims": false}}"#)).shims_declined());
+        assert!(record(&format!(r#"{{{base}, {shim}, "no_shims": true}}"#)).shims_declined());
     }
 
     #[test]

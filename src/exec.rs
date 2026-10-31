@@ -305,7 +305,7 @@ pub fn decode_output(bytes: &[u8]) -> String {
 }
 
 #[cfg(windows)]
-pub use imp::execute;
+pub use imp::{Drain, OUTPUT_GRACE, execute};
 
 #[cfg(windows)]
 mod imp {
@@ -337,9 +337,9 @@ mod imp {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
-    /// After the callback exits, how long to wait for programs it started that still hold its
+    /// After a process exits, how long to wait for programs it started that still hold its
     /// stdout/stderr (`start notepad`, a server in the background).
-    const OUTPUT_GRACE: Duration = Duration::from_secs(2);
+    pub const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 
     pub fn execute(plan: &Plan, timeout: Option<Duration>) -> Result<Outcome> {
         let start = Instant::now();
@@ -423,8 +423,8 @@ mod imp {
                     let _ = child.kill();
                     bail!("start {program}: couldn't resume the new process");
                 }
-                let out = Drain::start(child.stdout.take().unwrap());
-                let err = Drain::start(child.stderr.take().unwrap());
+                let out = Drain::start(child.stdout.take().unwrap(), TAIL_BYTES);
+                let err = Drain::start(child.stderr.take().unwrap(), TAIL_BYTES);
                 let mut timed_out = false;
                 let status = loop {
                     if let Some(s) = child.try_wait()? {
@@ -540,14 +540,14 @@ mod imp {
         }
     }
 
-    /// Drains a pipe on a thread, keeping only the last `TAIL_BYTES` (plus one read's worth).
-    struct Drain {
+    /// Drains a pipe on a thread, keeping about the last `keep` bytes (`usize::MAX`: everything).
+    pub struct Drain {
         kept: Arc<Mutex<Vec<u8>>>,
         done: mpsc::Receiver<()>,
     }
 
     impl Drain {
-        fn start(mut r: impl Read + Send + 'static) -> Drain {
+        pub fn start(mut r: impl Read + Send + 'static, keep: usize) -> Drain {
             let kept = Arc::new(Mutex::new(Vec::new()));
             let (tx, done) = mpsc::channel();
             let shared = kept.clone();
@@ -559,9 +559,9 @@ mod imp {
                     }
                     let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
                     kept.extend_from_slice(&buf[..n]);
-                    if kept.len() > 2 * TAIL_BYTES {
+                    if kept.len() > keep.saturating_mul(2) {
                         // an even cut keeps UTF-16 output aligned
-                        let cut = (kept.len() - TAIL_BYTES) & !1;
+                        let cut = (kept.len() - keep) & !1;
                         kept.drain(..cut);
                     }
                 }
@@ -570,13 +570,18 @@ mod imp {
             Drain { kept, done }
         }
 
-        /// The output so far, once the pipe closes or at `deadline`, whichever is first. A
-        /// program the callback left running may hold the pipe open for good.
+        /// The tail of the output so far as text: see [`Drain::collect_bytes`].
         fn collect(&self, deadline: Instant) -> String {
+            tail(&self.collect_bytes(deadline))
+        }
+
+        /// The output so far, once the pipe closes or at `deadline`, whichever is first. A
+        /// program the process left running may hold the pipe open for good.
+        pub fn collect_bytes(&self, deadline: Instant) -> Vec<u8> {
             let _ = self
                 .done
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()));
-            tail(&self.kept.lock().unwrap_or_else(|e| e.into_inner()))
+            self.kept.lock().unwrap_or_else(|e| e.into_inner()).clone()
         }
     }
 }

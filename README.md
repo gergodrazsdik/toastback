@@ -102,10 +102,12 @@ shims from the last install, so your choice stays.
 |---|---|
 | `default` | the default distro (the one marked `*` in `wsl -l -v`) |
 | `all` | every distro except Docker Desktop's (`docker-desktop*`), which are skipped with a note |
-| a distro name | that distro, including Docker Desktop's if you name it |
-| `none` | nowhere, for Windows-only use |
+| a distro name | that distro, including Docker Desktop's if you name it; it must exist |
+| `none` | nowhere, for Windows-only use (removes the shims of earlier installs too) |
 
-If Docker Desktop's distro is your default, no shim is written and a warning asks you to choose one with `--wsl`.
+If Docker Desktop's distro is your default, no shim is written and a warning asks you to choose one with `--wsl`. If
+a shim you asked for with `--wsl` can't be written, `install` exits with an error; without `--wsl` it only warns, and
+a later install tries again.
 
 Other `install` options:
 
