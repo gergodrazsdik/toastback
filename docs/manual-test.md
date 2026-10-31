@@ -107,9 +107,8 @@ covered by the smoke job, so here they only need to be checked once.
     "$(wslpath "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')")/toastback/log/toastback.jsonl"` is 0.
     (On a machine that ran 1.0.0, delete that `log` folder first: 1.0.0 logged the values.)
 
-43. **Ids differing in case:** `toastback --id Deploy -t one`, then `toastback --id deploy -t two`. Note whether the second
-    toast replaces the first, or both stay in the notification center. If both stay, the first one's buttons fail with
-    "token mismatch", and tags should be made lowercase.
+43. **Ids differing in case:** `toastback --id Deploy -t one`, then `toastback --id deploy -t two`: the second toast
+    replaces the first. `toastback remove DEPLOY` removes it.
 
 ## winget
 
