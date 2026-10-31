@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `open` targets and `exe` programs accept WSL paths: `/mnt/c/...`, `/home/...`, `./x` and `../x`.
+
 ### Changed
 
 - A clicked notification's `env` values are removed from its pending file at once, instead of staying until it expires.
@@ -38,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A damaged `install.json` no longer blocks `install` and `uninstall`, and `show` reports it instead of "not installed".
 - `install` warns when it can't update `toastback-cli.exe`, reports a failed PATH check as such, and shows `wsl.exe`'s
   own error when the distro can't start.
+||||||| Stash base
+- Output of localized `wsl.exe` messages could come out garbled in failure toasts and `toastback log`.
+- A relative `icon`, `image` or `cwd` with a Windows `context.cwd` no longer builds a broken path, and one with a
+  `context.cwd` like `~/x` is an error at show time.
+- A NUL in a callback's command, `env`, `cwd`, `distro` or `user` is refused when showing, instead of failing on the
+  click; one in the title no longer stops the callback.
+- A `WSLENV` in a callback's `env` is merged with toastback's instead of replaced, and keeps its flags.
+- `&` in a button label shows as `&` in dialogs too.
+- U+FFFE and U+FFFF in notification text no longer make `show` fail.
 
 ## [1.3.0] - 2026-10-31
 
