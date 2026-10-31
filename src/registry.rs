@@ -4,9 +4,10 @@
 use anyhow::{Context as _, Result};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA};
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SZ,
-    REG_VALUE_TYPE, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ,
+    REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ,
+    RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegOpenKeyExW,
+    RegSetValueExW,
 };
 use windows::core::{HSTRING, PCWSTR};
 
@@ -81,6 +82,24 @@ pub fn get_string(subkey: &str, name: &str) -> Result<Option<(String, Kind)>> {
 
 /// Create the key if needed and set a string value (`""` is the default value).
 pub fn set_string(subkey: &str, name: &str, value: &str, kind: Kind) -> Result<()> {
+    let data: Vec<u8> = value
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let reg_kind = match kind {
+        Kind::Plain => REG_SZ,
+        Kind::Expand => REG_EXPAND_SZ,
+    };
+    set_value(subkey, name, reg_kind, &data)
+}
+
+/// Create the key if needed and set a `REG_DWORD` value.
+pub fn set_dword(subkey: &str, name: &str, value: u32) -> Result<()> {
+    set_value(subkey, name, REG_DWORD, &value.to_le_bytes())
+}
+
+fn set_value(subkey: &str, name: &str, reg_kind: REG_VALUE_TYPE, data: &[u8]) -> Result<()> {
     let mut key = HKEY::default();
     // SAFETY: valid predefined root, NUL-terminated strings, out-pointer to a local HKEY.
     unsafe {
@@ -98,17 +117,8 @@ pub fn set_string(subkey: &str, name: &str, value: &str, kind: Kind) -> Result<(
         .ok()
         .with_context(|| format!(r"create HKCU\{subkey}"))?;
     }
-    let data: Vec<u8> = value
-        .encode_utf16()
-        .chain([0])
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    let reg_kind = match kind {
-        Kind::Plain => REG_SZ,
-        Kind::Expand => REG_EXPAND_SZ,
-    };
-    // SAFETY: key was opened above; data is a NUL-terminated UTF-16 buffer.
-    let res = unsafe { RegSetValueExW(key, &HSTRING::from(name), None, reg_kind, Some(&data)) };
+    // SAFETY: key was opened above; data is a live buffer in the format reg_kind names.
+    let res = unsafe { RegSetValueExW(key, &HSTRING::from(name), None, reg_kind, Some(data)) };
     // SAFETY: key is a valid open handle.
     unsafe {
         let _ = RegCloseKey(key);

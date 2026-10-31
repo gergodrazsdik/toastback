@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- winget package `Gergo.Drazsdik.Toastback` (from this version on), which installs, upgrades and uninstalls toastback
+  including its WSL shim.
+- `install --wsl default` writes the shim to the default WSL distro only.
+- `install --quiet` skips the test notification.
+- An Apps & Features entry, so toastback can be uninstalled from Windows' app list; `doctor` checks it.
+
+### Changed
+
+- From Windows, `install` without `--wsl` now writes the shim to the default distro on a first install, instead of to
+  every distro, and to the distros of the last install on a later one.
+- `install --wsl all` skips Docker Desktop's distros (`docker-desktop*`). Name one with `--wsl` to include it.
+- `install` gives up on a WSL command after a time limit instead of waiting forever for a stuck distro.
+- The exes' version info names Gergő Drazsdik as the company and copyright holder.
+- `just install` also adds toastback to the Windows PATH.
+
 ## [1.2.0] - 2026-10-23
 
 ### Added

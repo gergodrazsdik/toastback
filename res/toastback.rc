@@ -15,11 +15,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "toastback"
+      VALUE "CompanyName", L"Gerg\x0151 Drazsdik"
       VALUE "FileDescription", "toastback: async Windows toasts with callbacks"
       VALUE "FileVersion", VER_STR
       VALUE "InternalName", "toastback"
-      VALUE "LegalCopyright", "GPL-3.0-or-later"
+      VALUE "LegalCopyright", L"Copyright (C) 2026 Gerg\x0151 Drazsdik. Licensed under GPL-3.0-or-later."
       VALUE "OriginalFilename", "toastback.exe"
       VALUE "ProductName", "toastback"
       VALUE "ProductVersion", VER_STR

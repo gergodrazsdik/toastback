@@ -60,7 +60,7 @@ mod imp {
 
     use super::{Check, Status};
     use crate::install::{
-        self, ENV_KEY, PROTOCOL_COMMAND_KEY, aumid_key, path_contains, protocol_command,
+        self, APP_KEY, ENV_KEY, PROTOCOL_COMMAND_KEY, aumid_key, path_contains, protocol_command,
         render_shim,
     };
     use crate::registry;
@@ -128,6 +128,22 @@ mod imp {
             Ok(Some((cmd, _))) => Check::new("toastback://", Bad, format!("points at {cmd}")),
             Ok(None) => Check::new("toastback://", Bad, "not registered"),
             Err(e) => Check::new("toastback://", Bad, format!("{e:#}")),
+        });
+        checks.push(match registry::get_string(APP_KEY, "DisplayVersion") {
+            Ok(Some((v, _))) if record.as_ref().is_some_and(|r| r.version == v) => {
+                Check::new("app entry", Good, format!("version {v}"))
+            }
+            Ok(Some((v, _))) => Check::new(
+                "app entry",
+                Warn,
+                format!("says version {v}: run `install` again"),
+            ),
+            Ok(None) => Check::new(
+                "app entry",
+                Warn,
+                "not in Apps & Features: run `install` again",
+            ),
+            Err(e) => Check::new("app entry", Warn, format!("{e:#}")),
         });
 
         checks.push(match toast::setting() {

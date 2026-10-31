@@ -36,7 +36,7 @@ check:
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
     shellcheck scripts/*.sh
     shellcheck -s bash res/shim.sh.tmpl
-    yamllint -s .github .yamllint
+    yamllint -s .github .yamllint packaging
     actionlint
 
 alias lint := check
@@ -54,10 +54,10 @@ test:
 fmt:
     cargo fmt
 
-# Build and install for this distro (the normal dev loop)
+# Build and install for this distro and on the Windows PATH (the normal dev loop)
 [group('dev')]
 install: build
-    {{ exe }} install --wsl "$WSL_DISTRO_NAME" --distro "$WSL_DISTRO_NAME" --user "$(id -un)"
+    {{ exe }} install --wsl "$WSL_DISTRO_NAME" --distro "$WSL_DISTRO_NAME" --user "$(id -un)" --add-to-path
 
 # Remove the installation (keeps logs; `toastback uninstall --purge` removes those too)
 [group('dev')]
@@ -78,6 +78,40 @@ log n="20":
 [group('try')]
 doctor:
     toastback doctor
+
+# Check winget, wingetcreate and the settings the other winget recipes need
+[group('winget')]
+winget-setup:
+    scripts/winget.sh setup
+
+# Render and validate the manifest of a published release
+[group('winget')]
+winget-manifest version:
+    scripts/winget.sh manifest {{ version }}
+
+# Install this build through winget from a local manifest, check it, uninstall it, then reinstall for this distro
+[group('winget')]
+[confirm('This uninstalls toastback on this machine, tests winget, then runs `just install`. Continue? [y/N]')]
+winget-test: build
+    status=0; scripts/winget.sh test-local || status=$?; just install; exit "$status"
+
+# The same with a published release, before submitting it
+[group('winget')]
+[confirm('This uninstalls toastback on this machine, tests winget, then runs `just install`. Continue? [y/N]')]
+winget-test-release version: build
+    status=0; scripts/winget.sh test-release {{ version }} || status=$?; just install; exit "$status"
+
+# First submission only: open the PR that adds the package to microsoft/winget-pkgs
+[group('winget')]
+[confirm('Open a public pull request on microsoft/winget-pkgs? [y/N]')]
+winget-submit version:
+    scripts/winget.sh submit {{ version }}
+
+# After each later release: open the PR that adds this version to microsoft/winget-pkgs
+[group('winget')]
+[confirm('Open a public pull request on microsoft/winget-pkgs? [y/N]')]
+winget-update version:
+    scripts/winget.sh update {{ version }}
 
 # Step 1 of a release: on a new branch, bump Cargo.toml, date the changelog, push and open a PR
 [group('release')]
