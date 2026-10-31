@@ -53,7 +53,8 @@ pub fn callback_vars(spec: &crate::spec::Spec, id: &str, action: &str) -> Vec<(S
     vec![
         ("TOASTBACK_ID".into(), id.into()),
         ("TOASTBACK_ACTION".into(), action.into()),
-        ("TOASTBACK_TITLE".into(), spec.title.clone()),
+        // a title is text to show, and may hold a NUL; no variable can
+        ("TOASTBACK_TITLE".into(), spec.title.replace('\0', "")),
         ("TOASTBACK_DATA".into(), data),
     ]
 }
@@ -429,5 +430,9 @@ mod tests {
         let v = callback_vars(&s, "i", "go");
         assert!(v.contains(&("TOASTBACK_DATA".into(), r#"{"build":1234}"#.into())));
         assert!(v.contains(&("TOASTBACK_ACTION".into(), "go".into())));
+        let s = crate::spec::Spec::parse(r#"{"title": "a\u0000b", "data": "c\u0000d"}"#).unwrap();
+        let v = callback_vars(&s, "i", "go");
+        assert!(v.contains(&("TOASTBACK_TITLE".into(), "ab".into())));
+        assert!(v.iter().all(|(_, value)| !value.contains('\0')), "{v:?}");
     }
 }

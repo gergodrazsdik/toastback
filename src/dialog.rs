@@ -35,7 +35,8 @@ pub fn model(spec: &Spec) -> Model {
         buttons: spec
             .buttons
             .iter()
-            .map(|b| (b.id.clone(), b.label.clone()))
+            // to a dialog button `&` marks the access key; the label means the character
+            .map(|b| (b.id.clone(), b.label.replace('&', "&&")))
             .collect(),
         // a stock `icon` names the dialog's icon; an image path doesn't show in dialogs
         icon: match (spec.stock_icon(), spec.scenario) {
@@ -257,6 +258,12 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ampersands_in_labels_stay_text() {
+        let s = Spec::parse(r#"{"title": "t", "buttons": [{"id": "a", "label": "R&D"}]}"#).unwrap();
+        assert_eq!(model(&s).buttons[0].1, "R&&D");
+    }
 
     #[test]
     fn maps_spec_to_dialog() {
