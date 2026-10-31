@@ -136,4 +136,5 @@ covered by the smoke job, so here they only need to be checked once.
 27. `just install` again, then `toastback uninstall --purge`: `%LOCALAPPDATA%\toastback` is gone.
 28. `just install`, then start a long callback (for example **Snooze** in `examples/alarm.json`) and run `toastback uninstall` while
     it's running. It warns with the callback's pid, and only `bin\toastback.exe` is left. Once the callback is done, the
-    printed command removes the rest.
+    printed command removes the rest. The same with `just install` before the `uninstall`, so the running exe was moved
+    aside: only `bin\toastback.old-<pid>.exe` is left, and the printed command runs it, with no "Open with" window.
