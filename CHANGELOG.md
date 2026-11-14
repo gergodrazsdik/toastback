@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-14
+
 ### Added
 
 - `install.sh` and the WSL shim run in plain POSIX `sh`, so they work in distros without bash (Alpine), and `install.sh`
@@ -206,7 +208,8 @@ First public release. (A v0.1.0 test release was published and withdrawn; its `i
 - Clicks are accepted only with the notification's random 128-bit token; commands never come from the activation
   URI, and notification data reaches callbacks as environment variables, never pasted into a command line.
 
-[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.3.0...HEAD
+[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/gergodrazsdik/toastback/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/gergodrazsdik/toastback/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/gergodrazsdik/toastback/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/gergodrazsdik/toastback/compare/v1.0.0...v1.1.0
