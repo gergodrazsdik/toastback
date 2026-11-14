@@ -1,0 +1,107 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Security problems go through
+        [private vulnerability reporting](https://github.com/gergodrazsdik/toastback/security/advisories/new)
+        instead, not a public issue.
+
+        `toastback doctor` and `toastback log` often show the cause already, and the README's
+        [Limitations](https://github.com/gergodrazsdik/toastback#limitations) and
+        [Troubleshooting](https://github.com/gergodrazsdik/toastback#troubleshooting) cover the known ones.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The command you ran and, if you used one, the spec (JSON). Shorter is better.
+      placeholder: |
+        toastback my.json
+
+        {
+          "title": "...",
+          "buttons": [ ... ]
+        }
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: toastback version
+      description: Output of `toastback --version` (or `toastback-cli --version`).
+      placeholder: toastback 1.4.0 (d021a91)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - winget
+        - install.sh (from WSL)
+        - Zip
+        - From source (just install)
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows version
+      options:
+        - Windows 11
+        - Windows 10 22H2
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: caller
+    attributes:
+      label: Where you ran toastback from
+      multiple: true
+      options:
+        - WSL shell
+        - systemd service or timer / cron (in WSL)
+        - PowerShell or cmd (toastback-cli)
+        - Task Scheduler
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: WSL distro
+      description: For WSL problems, the distro and its version, e.g. Ubuntu 24.04, Fedora 44, Alpine 3.22.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: toastback doctor
+      description: >-
+        Output of `toastback doctor`. It shows your Windows user name in paths and your distro names; edit them
+        out if you like.
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: toastback log
+      description: >-
+        For a click that did the wrong thing: the matching lines of `toastback log` (`toastback log --id ID`).
+        They include your callback's output, so remove anything private.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I'm on the latest release, or the bug is still in it.
+          required: true
+        - label: I searched the existing issues.
+          required: true
