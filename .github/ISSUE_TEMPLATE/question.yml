@@ -1,0 +1,22 @@
+name: Question
+description: How to do something with toastback
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [README](https://github.com/gergodrazsdik/toastback#readme) covers install, the spec and callbacks,
+        and `toastback examples` prints ready-made specs to start from.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you want to do and what you've tried, with the spec or command if you have one.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: toastback version
+      description: Output of `toastback --version`.
+      placeholder: toastback 1.4.0 (d021a91)
