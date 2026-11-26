@@ -4,7 +4,7 @@
 //! Started from an interactive terminal (WSL or PowerShell), the exe gets no std handles at all, so
 //! everything it prints is lost. Redirected streams (pipes, files) arrive as normal handles. So: for
 //! each stream without a handle, attach to the parent's console and point the stream at it.
-//! See docs/decisions/000-spikes.md.
+//! See docs/adr/0003-terminal-output.md.
 
 use std::fs::OpenOptions;
 use std::os::windows::io::IntoRawHandle as _;

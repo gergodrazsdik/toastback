@@ -21,7 +21,7 @@ id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
 
 [Releases](https://github.com/gergodrazsdik/toastback/releases) follow [semantic versioning](https://semver.org);
 what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [docs/plan.md](docs/plan.md) and
-[docs/decisions/](docs/decisions/).
+[docs/adr/](docs/adr/README.md).
 
 ## Install
 
@@ -313,7 +313,7 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 - **Distros without bash (Alpine):** `install.sh` (which uses `wget` if there's no `curl`) and the `toastback` command
   need only POSIX `sh`, whatever your interactive shell is. A `{"wsl": "string"}` callback runs in `sh` there, so a
   string that relies on bash-only features, such as arrays, can fail.
-- **toastback isn't code-signed** (a deliberate choice, see [docs/decisions/004-m4.md](docs/decisions/004-m4.md)).
+- **toastback isn't code-signed** (a deliberate choice, see [ADR 0010](docs/adr/0010-no-code-signing.md)).
   With Windows 11's **Smart App Control** turned on, Windows may block unsigned apps it doesn't know yet ("An
   Application Control policy has blocked this file"; `install.sh` reports it). Smart App Control has no per-app
   exceptions. Without it, a browser download may still trigger SmartScreen on first run. `install` writes a fresh
@@ -349,7 +349,7 @@ Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. `just` lists the reci
 | `just winget-manifest X.Y.Z` / `just winget-test-release X.Y.Z` | winget: validate a release's manifest / run the same test with it |
 | `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | winget: open the first winget-pkgs PR / the PR for a later version |
 
-Design notes and decisions are in [docs/decisions/](docs/decisions/); the manual test checklist is
+Design notes and decisions are in [docs/adr/](docs/adr/README.md); the manual test checklist is
 [docs/manual-test.md](docs/manual-test.md).
 
 ## Contributing
