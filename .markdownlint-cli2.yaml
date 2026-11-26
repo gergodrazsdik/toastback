@@ -1,0 +1,16 @@
+---
+# markdownlint-cli2 configuration
+# https://github.com/DavidAnson/markdownlint-cli2
+config:
+  default: true
+  MD013: false  # line length: prose is wrapped by hand at 120, tables and URLs run longer
+  MD024:
+    siblings_only: true
+  MD033: false  # inline HTML (e.g. <details>) is allowed
+  MD041: false  # first line need not be a heading (templates, CLAUDE.md's import)
+  MD060: false  # table column style: compact and aligned both allowed
+# No `globs`/`gitignore` here: markdownlint-cli2 adds config globs to the
+# files given on the command line. `just lint-md` passes the tracked *.md
+# files and the pre-commit hook passes the staged ones.
+ignores:
+  - CODE_OF_CONDUCT.md  # upstream Contributor Covenant text, verbatim

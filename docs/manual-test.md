@@ -1,5 +1,8 @@
 # Manual test checklist
 
+<!-- markdownlint-disable MD029 -->
+<!-- Step numbers run through the whole checklist, so other docs and pull requests can refer to them. -->
+
 Run before a release, on Windows 11 x64 (and Windows 10 22H2 if available), from the repository root in
 WSL. Each step lists what to expect. Callback output appears in `toastback log`. Steps marked **(CI)** are also
 covered by the smoke job, so here they only need to be checked once.

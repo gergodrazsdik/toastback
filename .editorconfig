@@ -1,0 +1,27 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.rs]
+indent_size = 4
+
+[*.md]
+# Two trailing spaces are a Markdown hard line break; nested list
+# indentation follows the list marker width, not a fixed size.
+trim_trailing_whitespace = false
+indent_size = unset
+
+[{justfile,*.just,*.just.example}]
+# Recipe bodies use 4 spaces.
+indent_size = unset
+
+[LICENSE]
+# Upstream GPL-3.0 text, kept verbatim.
+indent_style = unset
+indent_size = unset

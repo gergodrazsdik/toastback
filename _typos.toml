@@ -1,0 +1,11 @@
+# typos configuration (https://github.com/crate-ci/typos)
+[files]
+# Upstream texts kept verbatim.
+extend-exclude = ["LICENSE", "CODE_OF_CONDUCT.md"]
+
+[default.extend-words]
+# Project vocabulary that is not a typo.
+pendings = "pendings"  # Store::remove_pendings: several pending files
+titel = "titel"        # spec.rs: a test that an unknown, misspelled field is rejected
+fo = "fo"              # exec.rs: base64 test vectors ("f", "fo", "foo")
+ubunut = "ubunut"      # install.rs: a test with a misspelled distro name
