@@ -25,6 +25,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0012](0012-repository-and-release.md) | Repository settings, release flow, changelog and versions | accepted |
 | [0013](0013-winget.md) | winget: the release zip with a nested installer | accepted |
 | [0014](0014-posix-sh.md) | No bash needed in WSL | accepted |
+| [0015](0015-pinned-ci.md) | Pinned CI: actions by commit SHA, linters by version and digest, a 7-day cooldown | accepted |
 
 ## Numbering and status
 

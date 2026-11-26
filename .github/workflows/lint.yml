@@ -1,0 +1,87 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# A newer push to the same PR cancels its run in progress; runs on main get a group per commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TOASTBACK_REQUIRE_TOOLS: "1"
+      # Versions of the linters that come from package registries; the release binaries are pinned with
+      # their digests in scripts/install-ci-tools.sh. Dependabot updates only the actions and crates:
+      # `just tool-updates` reports these.
+      YAMLLINT_VERSION: "1.38.0"
+      ZIZMOR_VERSION: "1.32.0"
+      MARKDOWNLINT_CLI2_VERSION: "0.24.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans the history
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install linters (release binaries, digests checked)
+        run: |
+          scripts/install-ci-tools.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install linters (PyPI, exact versions)
+        run: |
+          pipx install "yamllint==${YAMLLINT_VERSION}"
+          pipx install "zizmor==${ZIZMOR_VERSION}"
+      # Exact version; no lockfile for one CLI in a Rust repo.
+      - name: Install markdownlint-cli2 (npm, exact version)
+        run: npm install -g "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}"  # zizmor: ignore[adhoc-packages]
+      - name: just lint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # pinact resolves the pinned SHAs (read-only)
+        run: just lint
+
+  # The online audits (known-vulnerable actions, impostor commits) as annotations and in code scanning.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    env:
+      ZIZMOR_VERSION: "1.32.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor (PyPI, exact version)
+        run: pipx install "zizmor==${ZIZMOR_VERSION}"
+      - name: Audit the workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --no-progress --format=github .github/workflows
+      # The same audit as SARIF for the Security tab. A pull request from a fork has a read-only token, so
+      # the upload fails there; that must not fail the job.
+      - name: SARIF report
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --no-progress --format=sarif .github/workflows > zizmor.sarif || test -s zizmor.sarif
+      - name: Upload the results to code scanning
+        if: ${{ !cancelled() }}
+        continue-on-error: ${{ github.event.pull_request.head.repo.fork == true }}
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor

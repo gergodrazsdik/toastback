@@ -64,7 +64,7 @@ See [docs/dev-setup.md](docs/dev-setup.md) for the prerequisites. Then:
 just tools    # check the tools, with install hints
 just hooks    # install the git hooks
 just setup    # once: the Windows target and the MSVC CRT and SDK
-just check    # rustfmt, clippy and the linters CI runs
+just check    # rustfmt, clippy and the linters CI runs (`just lint`)
 just test     # the tests on Linux and, through WSL interop, on Windows
 just install  # build and install for this distro
 ```

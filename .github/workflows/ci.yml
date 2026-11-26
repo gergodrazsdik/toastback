@@ -19,7 +19,6 @@ env:
   CARGO_TERM_COLOR: always
   TARGET: x86_64-pc-windows-msvc
   CARGO_XWIN_VERSION: 0.23.1
-  ACTIONLINT_VERSION: 1.7.7
 
 jobs:
   build:
@@ -27,7 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain (from rust-toolchain.toml)
         run: rustup toolchain install
@@ -47,10 +48,10 @@ jobs:
       - name: cargo-xwin (prebuilt wheel)
         run: pipx install "cargo-xwin==$CARGO_XWIN_VERSION"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Cache the MSVC CRT and Windows SDK
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/cargo-xwin
           key: xwin-${{ env.CARGO_XWIN_VERSION }}
@@ -61,36 +62,13 @@ jobs:
       - name: clippy
         run: cargo xwin clippy --release --target "$TARGET" --all-targets -- -D warnings
 
-      - name: shellcheck
-        run: |
-          shellcheck scripts/*.sh
-          shellcheck -s sh res/shim.sh.tmpl
-
-      - name: Cache actionlint
-        id: actionlint
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/actionlint
-          key: actionlint-${{ env.ACTIONLINT_VERSION }}
-
-      - name: yamllint, actionlint
-        env:
-          BUILD: ${{ steps.actionlint.outputs.cache-hit != 'true' }}
-        run: |
-          pipx install yamllint
-          yamllint -s .github .yamllint packaging
-          if [ "$BUILD" = true ]; then
-            GOBIN=~/.cache/actionlint go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
-          fi
-          ~/.cache/actionlint/actionlint
-
       - name: Host tests
         run: cargo test --target x86_64-unknown-linux-gnu
 
       - name: Build
         run: cargo xwin build --release --target "$TARGET"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: toastback-exe
           path: |
@@ -103,10 +81,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Rust toolchain (from rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # showing toasts and dialogs stays out of CI; the unit tests don't need a desktop
       - run: cargo test
 
@@ -116,8 +96,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: toastback-exe
           path: dist

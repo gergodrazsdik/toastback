@@ -35,14 +35,14 @@ src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/to
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim template
 examples/            example specs; src/examples.rs registers them as built-in or repo-only
 scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, make-icon.sh, with-tool.sh,
-                     check-spdx.sh
+                     check-spdx.sh, install-ci-tools.sh, tool-updates.sh
 packaging/winget/    the winget manifest templates
 docs/plan.md         the original plan
 docs/adr/            architecture decision records
 docs/manual-test.md  the manual test checklist
 docs/dev-setup.md    prerequisites and local setup
 .claude/settings.json  committed Claude Code sandbox and deny rules
-.github/             workflows/ (ci.yml, release.yml), issue and PR templates, CODEOWNERS, dependabot.yml
+.github/             workflows/ (ci.yml, lint.yml, release.yml), issue and PR templates, CODEOWNERS, dependabot.yml
 ```
 
 Keep this tree current when you add top-level files or folders.
@@ -101,7 +101,9 @@ Use `just` (`just --list`):
 | `just build` | Windows release build of both exes (`cargo xwin`). |
 | `just run <args>` | Build, then run `toastback.exe` from WSL with the arguments as they are. |
 | `just check` | `cargo fmt --check`, clippy for the Windows target with `-D warnings`, then `just lint`. |
-| `just lint` | Every linter: Markdown, YAML, actionlint, shellcheck, typos, EditorConfig, gitleaks, the SPDX identifiers. |
+| `just lint` | Every linter the `lint` workflow runs: Markdown, YAML, actionlint, zizmor, pinact, shellcheck, typos, EditorConfig, gitleaks, the SPDX identifiers. |
+| `just pin` | Pin workflow actions to full commit SHAs (pinact). |
+| `just tool-updates` | Which linter versions pinned outside Dependabot's reach have newer releases, and when each is due (7-day cooldown). Read-only. |
 | `just test` | Host-target tests, the Windows tests through WSL interop, then `validate` on every example. |
 | `just fmt` | Format the code. |
 | `just tools` / `just hooks` | Check the development tools, with install hints / install the lefthook git hooks. |
