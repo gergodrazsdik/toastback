@@ -391,7 +391,7 @@ impl Store {
         Ok(())
     }
 
-    /// Log events, oldest first (rotated file included). Unparseable lines are skipped.
+    /// Log events, oldest first (rotated file included). Unparsable lines are skipped.
     pub fn read_log(&self) -> Result<Vec<Value>> {
         let path = self.log_file();
         let mut events = Vec::new();

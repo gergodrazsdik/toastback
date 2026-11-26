@@ -2,6 +2,8 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+import? 'local.just'
+
 target := "x86_64-pc-windows-msvc"
 host := "x86_64-unknown-linux-gnu"
 exe := "target/" + target + "/release/toastback.exe"
@@ -29,17 +31,11 @@ build:
 run *args: build
     {{ exe }} "$@"
 
-# Format check, clippy for the Windows target (warnings as errors), shellcheck, yamllint, actionlint
+# Everything CI checks before the tests: rustfmt, clippy for the Windows target (warnings as errors), the linters
 [group('dev')]
-check:
+check: && lint
     cargo fmt --check
     cargo xwin clippy --release --target {{ target }} --all-targets -- -D warnings
-    shellcheck scripts/*.sh
-    shellcheck -s sh res/shim.sh.tmpl
-    yamllint -s .github .yamllint packaging
-    actionlint
-
-alias lint := check
 
 # Unit tests: platform-neutral code on the host, then the Windows build through WSL interop
 [group('dev')]
@@ -53,6 +49,105 @@ test:
 [group('dev')]
 fmt:
     cargo fmt
+
+# Check that the development tools are installed and print install hints
+[group('meta')]
+tools:
+    #!/bin/sh
+    missing=0
+    check() {
+      if command -v "$1" >/dev/null 2>&1; then
+        printf '  ok       %s\n' "$1"
+      else
+        printf '  MISSING  %-22s %s\n' "$1" "$2"
+        missing=1
+      fi
+    }
+    optional() {
+      if command -v "$1" >/dev/null 2>&1; then
+        printf '  ok       %s\n' "$1"
+      else
+        printf '  -        %-22s %s\n' "$1" "$2"
+      fi
+    }
+    echo "Build and test:"
+    check git                  "https://git-scm.com/downloads"
+    check just                 "https://just.systems/man/en/packages.html"
+    check rustup               "https://rustup.rs"
+    check cargo-xwin           "cargo install --locked cargo-xwin"
+    check clang                "your distro's clang package"
+    check lld-link             "your distro's lld package (the unversioned name must be on PATH)"
+    check llvm-rc              "your distro's llvm package (the unversioned name must be on PATH)"
+    echo "Linters:"
+    check lefthook             "https://lefthook.dev/installation/"
+    check shellcheck           "https://github.com/koalaman/shellcheck#installing"
+    check yamllint             "pipx install yamllint (or uv tool install yamllint)"
+    check actionlint           "https://github.com/rhysd/actionlint/blob/main/docs/install.md"
+    check markdownlint-cli2    "npm install -g markdownlint-cli2"
+    check typos                "cargo install typos-cli, or https://github.com/crate-ci/typos#install"
+    check editorconfig-checker "https://github.com/editorconfig-checker/editorconfig-checker#installation"
+    check gitleaks             "https://github.com/gitleaks/gitleaks#installing"
+    echo "Recommended:"
+    optional gh                "https://cli.github.com/"
+    optional claude            "https://code.claude.com/docs/en/setup"
+    echo "Git hooks:"
+    if [ -f "$(git rev-parse --git-path hooks)/pre-commit" ]; then
+      echo "  ok       installed"
+    else
+      echo "  MISSING  git hooks              just hooks"
+      missing=1
+    fi
+    exit "$missing"
+
+# Install the git hooks (lefthook)
+[group('meta')]
+hooks:
+    lefthook install
+
+# Run every linter (a missing tool is skipped with a message; CI requires them all)
+[group('lint')]
+lint: lint-md lint-yaml lint-actions lint-sh typos editorconfig gitleaks spdx
+
+# Lint Markdown (markdownlint-cli2)
+[group('lint')]
+lint-md:
+    git ls-files -z '*.md' | xargs -0 scripts/with-tool.sh markdownlint-cli2
+
+# Lint YAML (yamllint)
+[group('lint')]
+lint-yaml:
+    scripts/with-tool.sh yamllint --strict .
+
+# Lint GitHub Actions workflows (actionlint)
+[group('lint')]
+lint-actions:
+    scripts/with-tool.sh actionlint
+
+# Lint the shell scripts and the shim template (shellcheck)
+[group('lint')]
+lint-sh:
+    git ls-files -z '*.sh' | xargs -0 scripts/with-tool.sh shellcheck
+    scripts/with-tool.sh shellcheck -s sh res/shim.sh.tmpl
+
+# Check spelling (typos)
+[group('lint')]
+typos:
+    scripts/with-tool.sh typos
+
+# Check files against .editorconfig (editorconfig-checker)
+[group('lint')]
+editorconfig:
+    git ls-files -z | xargs -0 scripts/with-tool.sh editorconfig-checker
+
+# Scan the git history for secrets (gitleaks)
+[group('lint')]
+gitleaks:
+    scripts/with-tool.sh gitleaks git --redact --no-banner
+
+# Check that every source file starts with its license identifier (SPDX)
+[group('lint')]
+spdx:
+    scripts/check-spdx.sh
 
 # Build and install for this distro and on the Windows PATH (the normal dev loop)
 [group('dev')]

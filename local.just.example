@@ -1,0 +1,16 @@
+# Personal recipes. Copy to `local.just` (gitignored); the justfile imports it if present.
+# Keep secrets out of files: read them from your own secret manager at run time.
+# Nothing in the committed justfile depends on these recipes.
+
+# Example: install the build into a second distro as well.
+#
+# [group('local')]
+# install-other:
+#     just build
+#     target/x86_64-pc-windows-msvc/release/toastback.exe install --wsl my-other-distro
+
+# Example: run a demo notification with your own spec.
+#
+# [group('local')]
+# my-demo:
+#     toastback ~/notes/my-spec.json

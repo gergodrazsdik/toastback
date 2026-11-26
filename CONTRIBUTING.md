@@ -61,11 +61,16 @@ Signed commits are welcome but not required: the squash commit on `main` is made
 See [docs/dev-setup.md](docs/dev-setup.md) for the prerequisites. Then:
 
 ```sh
+just tools    # check the tools, with install hints
+just hooks    # install the git hooks
 just setup    # once: the Windows target and the MSVC CRT and SDK
-just check    # rustfmt, clippy, shellcheck, yamllint, actionlint
+just check    # rustfmt, clippy and the linters CI runs
 just test     # the tests on Linux and, through WSL interop, on Windows
 just install  # build and install for this distro
 ```
+
+`just lint` and the hooks skip a linter that isn't installed and print a clear message; CI sets
+`TOASTBACK_REQUIRE_TOOLS=1` and runs every check.
 
 ### Local overrides
 
@@ -74,6 +79,8 @@ files:
 
 | File | Purpose |
 |---|---|
+| `local.just` | Extra recipes, imported by the justfile if present (see `local.just.example`). |
+| `lefthook-local.yml` | Personal hook overrides ([lefthook docs](https://lefthook.dev/configuration/)). |
 | `CLAUDE.local.md` | Personal notes for Claude Code. |
 | `.claude/settings.local.json` | Personal Claude Code settings. |
 | `.env.local` | Local environment variables. |

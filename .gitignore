@@ -1,6 +1,18 @@
 /target
 
-# Personal, machine-specific files (AGENTS.md "Local overrides")
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Personal, machine-specific files (CONTRIBUTING.md "Local overrides")
+local.just
+lefthook-local.yml
 CLAUDE.local.md
 .claude/settings.local.json
 

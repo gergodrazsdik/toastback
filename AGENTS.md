@@ -29,11 +29,13 @@ pick a side yourself.
 ```text
 AGENTS.md CLAUDE.md README.md LICENSE CHANGELOG.md
 CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md
-Cargo.toml Cargo.lock rust-toolchain.toml build.rs justfile .cargo/config.toml
+Cargo.toml Cargo.lock rust-toolchain.toml build.rs .cargo/config.toml
+justfile  local.just.example  lefthook.yml  .editorconfig  lint configs
 src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/toastback-cli.rs, one module per concern
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim template
 examples/            example specs; src/examples.rs registers them as built-in or repo-only
-scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, make-icon.sh
+scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, make-icon.sh, with-tool.sh,
+                     check-spdx.sh
 packaging/winget/    the winget manifest templates
 docs/plan.md         the original plan
 docs/adr/            architecture decision records
@@ -98,16 +100,20 @@ Use `just` (`just --list`):
 | `just setup` | One-time: the Windows target and the MSVC CRT and SDK for cargo-xwin. |
 | `just build` | Windows release build of both exes (`cargo xwin`). |
 | `just run <args>` | Build, then run `toastback.exe` from WSL with the arguments as they are. |
-| `just check` (alias `lint`) | `cargo fmt --check`, clippy for the Windows target with `-D warnings`, shellcheck, yamllint, actionlint. |
+| `just check` | `cargo fmt --check`, clippy for the Windows target with `-D warnings`, then `just lint`. |
+| `just lint` | Every linter: Markdown, YAML, actionlint, shellcheck, typos, EditorConfig, gitleaks, the SPDX identifiers. |
 | `just test` | Host-target tests, the Windows tests through WSL interop, then `validate` on every example. |
 | `just fmt` | Format the code. |
+| `just tools` / `just hooks` | Check the development tools, with install hints / install the lefthook git hooks. |
 | `just install` / `just uninstall` | Build and install for this distro and on the Windows PATH (the dev loop) / remove it. |
 | `just demo` / `just log` / `just doctor` | Show every example / recent events / check the installation. |
 | `just winget-setup`, `winget-manifest X.Y.Z`, `winget-test`, `winget-test-release X.Y.Z` | winget packaging and its local tests ([ADR 0013](docs/adr/0013-winget.md)). |
 | `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | Maintainer only: public pull requests on `microsoft/winget-pkgs`. |
 | `just bump X.Y.Z` / `just release X.Y.Z` | Maintainer only: the release flow ([ADR 0012](docs/adr/0012-repository-and-release.md)). |
 
-Run `just check` and `just test` before every commit that changes code (`just check` alone for docs).
+Run `just check` and `just test` before every commit that changes code (`just lint` alone for docs). The hooks run
+rustfmt and the linters on staged files, plus gitleaks. A missing linter is skipped with a message locally; CI
+requires them all.
 
 The built exe runs from WSL directly (`target/x86_64-pc-windows-msvc/release/toastback.exe`). It's GUI-subsystem:
 redirected output arrives as pipes, and in a terminal `console.rs` attaches the missing streams to the parent
@@ -144,7 +150,8 @@ carry on with work that doesn't depend on the answer.
 
 ## Local overrides
 
-`CLAUDE.local.md`, `.claude/settings.local.json` and `.env.local` are personal and gitignored. Never commit them, and
+`local.just`, `lefthook-local.yml`, `CLAUDE.local.md`, `.claude/settings.local.json` and `.env.local` are personal and
+gitignored. Never commit them, and
 never put machine-specific paths, tools or secret-manager commands into committed files.
 
 ## Writing style

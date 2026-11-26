@@ -17,9 +17,22 @@ cross-compiled for `x86_64-pc-windows-msvc` with cargo-xwin, and the tests run t
 | rustup | <https://rustup.rs>; `rust-toolchain.toml` picks the toolchain, the Windows target and the components |
 | clang, lld, llvm | your distro's packages (`llvm-rc` and `lld-link` must be on PATH under these names) |
 | cargo-xwin | `cargo install --locked cargo-xwin` |
+
+The linters (`just lint` and the git hooks):
+
+| Tool | Install |
+|---|---|
+| lefthook | <https://lefthook.dev/installation/> |
 | ShellCheck | <https://github.com/koalaman/shellcheck#installing> |
 | yamllint | `pipx install yamllint` or `uv tool install yamllint` |
 | actionlint | <https://github.com/rhysd/actionlint/blob/main/docs/install.md> |
+| markdownlint-cli2 | `npm install -g markdownlint-cli2` (needs Node.js) |
+| typos | `cargo install typos-cli`, or <https://github.com/crate-ci/typos#install> |
+| editorconfig-checker | <https://github.com/editorconfig-checker/editorconfig-checker#installation> |
+| gitleaks | <https://github.com/gitleaks/gitleaks#installing> |
+
+`just tools` lists what's installed and how to install the rest. `just lint` and the hooks skip a linter that's
+missing, with a message; CI runs them all.
 
 Recommended: the [GitHub CLI](https://cli.github.com/) (`gh`) and [Claude Code](https://code.claude.com/docs/en/setup).
 The winget recipes also need the Windows `winget` and `wingetcreate` (`just winget-setup` checks them).
@@ -29,8 +42,10 @@ The winget recipes also need the Windows `winget` and `wingetcreate` (`just wing
 ```sh
 git clone https://github.com/gergodrazsdik/toastback.git
 cd toastback
+just tools    # what's installed, with install hints
+just hooks    # install the git hooks
 just setup    # the Windows target, and the MSVC CRT and Windows SDK for cargo-xwin (accepts Microsoft's licence)
-just check    # rustfmt, clippy for the Windows target, shellcheck, yamllint, actionlint
+just check    # rustfmt, clippy for the Windows target, and every linter
 just test     # host tests, Windows tests through WSL interop, `validate` on every example
 just install  # build and install for this distro and on the Windows PATH
 toastback doctor

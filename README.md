@@ -143,7 +143,7 @@ notifications.
 
 ## Usage
 
-```
+```text
 toastback [show] [FILE | -] [-t TITLE] [-m BODY] [-d DETAILS] [-i ICON]
                  [--mode toast|dialog] [--scenario default|reminder|alarm|urgent] [--id ID]
 ```
@@ -341,7 +341,8 @@ Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin; the prerequisites are
 | Recipe | |
 |---|---|
 | `just build` | release build of both exes |
-| `just check` | rustfmt, clippy (Windows target, warnings as errors), shellcheck, yamllint, actionlint |
+| `just check` | rustfmt, clippy (Windows target, warnings as errors), then every linter (`just lint`) |
+| `just tools` / `just hooks` | check the development tools / install the git hooks |
 | `just test` | unit tests on Linux and on Windows (through WSL interop), then `validate` on every example |
 | `just install` | build and install for the current distro and on the Windows PATH |
 | `just demo` / `just log` / `just doctor` | show every example / recent events / check the install |
