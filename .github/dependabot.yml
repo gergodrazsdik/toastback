@@ -1,11 +1,15 @@
 version: 2
 updates:
-  # version updates come as one grouped PR per ecosystem and week (security updates come as they're found);
-  # at most 3 open at a time
+  # Version updates come as one grouped PR per ecosystem and week (security updates come as they're found),
+  # at most 3 open at a time. New releases wait 7 days before Dependabot proposes them. The linters pinned in
+  # scripts/install-ci-tools.sh and lint.yml, and cargo-xwin in ci.yml, are outside Dependabot's reach:
+  # `just tool-updates` reports them.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     groups:
       cargo:
@@ -14,6 +18,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     groups:
       actions:

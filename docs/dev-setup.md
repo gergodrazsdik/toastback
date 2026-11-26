@@ -26,13 +26,16 @@ The linters (`just lint` and the git hooks):
 | ShellCheck | <https://github.com/koalaman/shellcheck#installing> |
 | yamllint | `pipx install yamllint` or `uv tool install yamllint` |
 | actionlint | <https://github.com/rhysd/actionlint/blob/main/docs/install.md> |
+| zizmor | `pipx install zizmor` or `uv tool install zizmor`, <https://docs.zizmor.sh/installation/> |
+| pinact | <https://github.com/suzuki-shunsuke/pinact#install> |
 | markdownlint-cli2 | `npm install -g markdownlint-cli2` (needs Node.js) |
 | typos | `cargo install typos-cli`, or <https://github.com/crate-ci/typos#install> |
 | editorconfig-checker | <https://github.com/editorconfig-checker/editorconfig-checker#installation> |
 | gitleaks | <https://github.com/gitleaks/gitleaks#installing> |
 
 `just tools` lists what's installed and how to install the rest. `just lint` and the hooks skip a linter that's
-missing, with a message; CI runs them all.
+missing, with a message; CI runs them all, at the versions pinned in `.github/workflows/lint.yml` and
+`scripts/install-ci-tools.sh`.
 
 Recommended: the [GitHub CLI](https://cli.github.com/) (`gh`) and [Claude Code](https://code.claude.com/docs/en/setup).
 The winget recipes also need the Windows `winget` and `wingetcreate` (`just winget-setup` checks them).

@@ -25,6 +25,12 @@ pre-commit:
     - name: actionlint
       glob: ".github/workflows/*.{yml,yaml}"
       run: scripts/with-tool.sh actionlint {staged_files}
+    - name: zizmor
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: scripts/with-tool.sh zizmor --offline --no-progress {staged_files}
+    - name: pinact
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: scripts/with-tool.sh pinact run --check {staged_files}
     - name: spdx
       glob: "*.{rs,sh}"
       run: scripts/check-spdx.sh {staged_files}

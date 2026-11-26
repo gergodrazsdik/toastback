@@ -83,6 +83,8 @@ tools:
     check shellcheck           "https://github.com/koalaman/shellcheck#installing"
     check yamllint             "pipx install yamllint (or uv tool install yamllint)"
     check actionlint           "https://github.com/rhysd/actionlint/blob/main/docs/install.md"
+    check zizmor               "pipx install zizmor (or uv tool install zizmor), https://docs.zizmor.sh/installation/"
+    check pinact               "https://github.com/suzuki-shunsuke/pinact#install"
     check markdownlint-cli2    "npm install -g markdownlint-cli2"
     check typos                "cargo install typos-cli, or https://github.com/crate-ci/typos#install"
     check editorconfig-checker "https://github.com/editorconfig-checker/editorconfig-checker#installation"
@@ -99,6 +101,11 @@ tools:
     fi
     exit "$missing"
 
+# Which linter versions pinned outside Dependabot's reach have newer releases, and when each update is due (7-day cooldown); read-only
+[group('meta')]
+tool-updates:
+    scripts/tool-updates.sh
+
 # Install the git hooks (lefthook)
 [group('meta')]
 hooks:
@@ -106,7 +113,7 @@ hooks:
 
 # Run every linter (a missing tool is skipped with a message; CI requires them all)
 [group('lint')]
-lint: lint-md lint-yaml lint-actions lint-sh typos editorconfig gitleaks spdx
+lint: lint-md lint-yaml lint-actions zizmor pinact-check lint-sh typos editorconfig gitleaks spdx
 
 # Lint Markdown (markdownlint-cli2)
 [group('lint')]
@@ -122,6 +129,21 @@ lint-yaml:
 [group('lint')]
 lint-actions:
     scripts/with-tool.sh actionlint
+
+# Audit GitHub Actions workflows for security problems (zizmor, offline audits)
+[group('lint')]
+zizmor:
+    scripts/with-tool.sh zizmor --offline --no-progress .github/workflows
+
+# Check that every action is pinned to a full commit SHA (pinact)
+[group('lint')]
+pinact-check:
+    scripts/with-tool.sh pinact run --check
+
+# Pin workflow actions to full commit SHAs (pinact)
+[group('lint')]
+pin:
+    pinact run
 
 # Lint the shell scripts and the shim template (shellcheck)
 [group('lint')]
