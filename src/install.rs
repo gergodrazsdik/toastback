@@ -763,10 +763,14 @@ mod imp {
         outln!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
         let wrapper_path = format!("{home}/.local/bin/notify-send");
         match notify_send {
-            NotifySendResult::Wrote => outln!(
-                "wrote {wrapper_path} in {}{who}: notify-send shows Windows toasts",
-                t.distro
-            ),
+            NotifySendResult::Wrote => {
+                outln!(
+                    "wrote {wrapper_path} in {}{who}: notify-send shows Windows toasts",
+                    t.distro
+                );
+                // shells remember where they found a command: an open one may still run the old one
+                outln!("  in terminals that are already open, run `hash -r` (zsh: `rehash`) first");
+            }
             NotifySendResult::Kept => outln!(
                 "  note: left {wrapper_path} in {} alone: it isn't toastback's (move it away and install again to use toastback's)",
                 t.distro

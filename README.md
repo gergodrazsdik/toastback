@@ -214,7 +214,9 @@ id=$(notify-send -p "Copying…") && notify-send -r "$id" "Copy done"
 `install` leaves a `~/.local/bin/notify-send` that isn't toastback's alone, with a note. `install --no-notify-send`
 removes the wrapper and keeps it off in later installs and upgrades; `install --notify-send` brings it back.
 `~/.local/bin` has to come before `/usr/bin` on PATH (`toastback doctor` checks it). An alias isn't enough, because
-scripts don't read your shell's aliases. Not covered: systemd services (their PATH has no `~/.local/bin`), programs
+scripts don't read your shell's aliases. A shell that was open during the install may remember the old `notify-send`
+(`command -v notify-send` still shows `/usr/bin/notify-send`): run `hash -r` (zsh: `rehash`) or open a new terminal.
+Scripts and new shells look it up afresh. Not covered: systemd services (their PATH has no `~/.local/bin`), programs
 that run `/usr/bin/notify-send` by its full path, and programs that send notifications over D-Bus themselves.
 
 | notify-send | In toastback |

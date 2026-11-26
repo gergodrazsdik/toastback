@@ -134,8 +134,9 @@ covered by the smoke job, so here they only need to be checked once.
 
 ## notify-send
 
-45. After `just install`, the output has "wrote ~/.local/bin/notify-send in <distro>", `command -v notify-send` prints
-    `~/.local/bin/notify-send`, and `toastback doctor` shows `notify-send (<distro>)` as `ok`.
+45. After `just install`, the output has "wrote ~/.local/bin/notify-send in <distro>" and the `hash -r` hint. In a
+    new terminal (or after `rehash` in zsh), `command -v notify-send` prints `~/.local/bin/notify-send`, and
+    `toastback doctor` shows `notify-send (<distro>)` as `ok`.
 46. `notify-send -a CI -i dialog-warning "Disk almost full" "<b>93%</b> used\nClean up soon"` prints nothing, exits 0
     and shows a toast with the warning icon, "CI" as attribution and a two-line body without the `<b>` tags.
     `notify-send -u low Quiet` makes no sound. `notify-send -u critical "Disk full"` stays on screen with a
