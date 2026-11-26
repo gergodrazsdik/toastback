@@ -1,20 +1,29 @@
 # toastback
 
-Async Windows toast notifications with callbacks, for WSL and scripts.
+Windows toast notifications for WSL and scripts: buttons that run commands, answers you can wait for, progress
+bars, and a drop-in `notify-send`.
 
 `toastback` shows a toast (or a native dialog) and **returns immediately**. When someone clicks a button,
 even hours later from the notification center, Windows starts `toastback` again and it runs the command
 attached to that button: in **WSL** (by default in the distro, user and directory that sent the notification) or
-on **Windows**.
+on **Windows**. A script that needs the answer right away waits for it with `--wait`.
 
 ```bash
-toastback -t "Backup finished" -m "42 GB in 12 min"      # simple alert, prints the notification id
-toastback examples deploy | toastback                    # buttons that run commands
-id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
+notify-send "Backup finished" "42 GB in 12 min"           # existing scripts work unchanged
+toastback -t "Backup finished" -m "42 GB in 12 min"       # toastback's own flags; prints the notification id
+toastback examples deploy | toastback                     # buttons that run commands
+choice=$(toastback examples reboot-dialog | toastback --wait)   # a dialog; prints the button chosen
 ```
 
-- Single self-contained exe, no runtime. Windows 10 22H2+ / Windows 11, per-user install, no admin rights.
+- **A drop-in `notify-send`.** `install` puts `notify-send` on your PATH in WSL, so scripts and tools that call it
+  show Windows toasts without changes: urgency, icons, actions (`-A`), `-w`, progress hints and stack tags
+  included. See [As `notify-send`](#as-notify-send).
+- **Native, small and fast.** Written in Rust on Windows' own toast API (WinRT): one self-contained 1.3 MB exe, no
+  runtime, no PowerShell, no .NET. Showing a toast takes about 80 ms from WSL and 50 ms from PowerShell. Windows
+  10 22H2+ / Windows 11, per-user install, no admin rights.
 - Buttons run commands in WSL (a login shell or an argv), cmd, PowerShell, any exe, or open a URL/file.
+- Progress bars that move in place (`toastback update`), banners that stay longer (`duration`), urgent toasts that
+  get through Do not disturb (Windows 11).
 - Click a toast's text to open a details dialog with the same buttons, or use `mode: dialog` for prompts
   that must not be missed.
 - Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
