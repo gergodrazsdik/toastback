@@ -11,7 +11,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-baseline.md) | Baseline: the plan's locked decisions | accepted, amended by 0003, 0013, 0017 |
+| [0001](0001-baseline.md) | Baseline: the plan's locked decisions | accepted, amended by 0003, 0013, 0017, 0020 |
 | [0002](0002-platform-spikes.md) | Platform spikes: registry-only app id, protocol activation, TaskDialog, cross-built GUI exe | accepted |
 | [0003](0003-terminal-output.md) | Terminal output: attach the parent console, plus a console-subsystem `toastback-cli.exe` | accepted |
 | [0004](0004-running-callbacks.md) | Running callbacks: `wsl.exe --exec`, encoded PowerShell, raw cmd, one click per notification | accepted, amended by 0014 |
@@ -30,6 +30,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0017](0017-notify-send.md) | notify-send: a subcommand, a wrapper installed by default, and an opt-in wait | accepted, amended by 0018 |
 | [0018](0018-wait.md) | Waiting for an answer: `--wait`, `wait ID`, and notify-send's `-w` and `-A` | accepted |
 | [0019](0019-progress-and-duration.md) | Progress bars, `toastback update`, and the banner's duration | accepted |
+| [0020](0020-scoop.md) | Scoop: a bucket of our own, with the same nested install as winget | accepted |
 
 ## Numbering and status
 

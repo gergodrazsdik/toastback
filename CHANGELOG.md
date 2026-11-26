@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Scoop: `scoop bucket add gergodrazsdik https://github.com/gergodrazsdik/scoop-bucket`, then
+  `scoop install gergodrazsdik/toastback`. Updates keep your `--wsl` and notify-send choices.
+
 - `--wait [--timeout DURATION]` and `toastback wait ID`: wait until a notification is answered and print the answer
   (the button id, or `__body`). Exit 0 answered, 5 closed without a choice (dismissed, dialog closed, removed), 6
   timed out, 130 Ctrl-C (in WSL the shell reports 1, WSL's code for it). Without `--wait`, nothing changes.

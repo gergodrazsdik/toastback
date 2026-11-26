@@ -34,9 +34,10 @@ justfile  local.just.example  lefthook.yml  .editorconfig  lint configs
 src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/toastback-cli.rs, one module per concern
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim and notify-send wrapper templates
 examples/            example specs; src/examples.rs registers them as built-in or repo-only
-scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, make-icon.sh, with-tool.sh,
+scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, scoop.sh, make-icon.sh, with-tool.sh,
                      check-spdx.sh, install-ci-tools.sh, tool-updates.sh, github-settings.sh
 packaging/winget/    the winget manifest templates
+packaging/scoop/     the Scoop manifest template (the bucket is gergodrazsdik/scoop-bucket)
 docs/plan.md         the original plan
 docs/adr/            architecture decision records
 docs/manual-test.md  the manual test checklist
@@ -72,7 +73,8 @@ Keep this tree current when you add top-level files or folders.
   ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/): Added, Changed, Deprecated, Removed, Fixed, Security).
 - A new spec field or command updates README.md, adds or extends an example in `examples/` (registered in
   `src/examples.rs` as built-in or repo-only), and adds a step to `docs/manual-test.md`.
-- A change to install, the winget manifest or packaging runs `just winget-test` before it's merged.
+- A change to install, the winget or Scoop manifest or packaging runs `just winget-test` and `just scoop-test` before
+  it's merged.
 - After a larger change: `just check && just test && just install`, then give the maintainer the manual steps from
   `docs/manual-test.md` that cover it.
 
@@ -112,6 +114,7 @@ Use `just` (`just --list`):
 | `just demo` / `just log` / `just doctor` | Show every example / recent events / check the installation. |
 | `just winget-setup`, `winget-manifest X.Y.Z`, `winget-test`, `winget-test-release X.Y.Z` | winget packaging and its local tests ([ADR 0013](docs/adr/0013-winget.md)). |
 | `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | Maintainer only: public pull requests on `microsoft/winget-pkgs`. |
+| `just scoop-setup`, `scoop-manifest X.Y.Z`, `scoop-test` | Scoop packaging and its local test ([ADR 0020](docs/adr/0020-scoop.md)). The bucket's bot updates the published manifest. |
 | `just github-settings <repo>` / `just github-settings-check <repo>` | Maintainer only: apply the repository settings and rulesets ([ADR 0016](docs/adr/0016-settings-as-code.md)) / read them back and report differences. |
 | `just bump X.Y.Z` / `just release X.Y.Z` | Maintainer only: the release flow ([ADR 0012](docs/adr/0012-repository-and-release.md)). |
 

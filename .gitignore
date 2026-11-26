@@ -1,4 +1,6 @@
 /target
+# rendered package manifests (just scoop-manifest)
+/dist
 
 # OS and editor files
 .DS_Store
