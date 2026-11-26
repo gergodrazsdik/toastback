@@ -20,7 +20,7 @@ id=$(toastback --mode dialog -t "Reboot?" -m "Updates are installed")
 - Callback output, exit codes and timings are logged (`toastback log`). Optional "done"/"failed" toasts.
 
 [Releases](https://github.com/gergodrazsdik/toastback/releases) follow [semantic versioning](https://semver.org);
-what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [PLAN.md](PLAN.md) and
+what changed is in [CHANGELOG.md](CHANGELOG.md). The design is in [docs/plan.md](docs/plan.md) and
 [docs/decisions/](docs/decisions/).
 
 ## Install

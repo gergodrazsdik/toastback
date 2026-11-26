@@ -3,6 +3,9 @@
 > Implementation brief for Claude Code. Target: a working, released v1 in 1–2 days.
 > Develop and build in WSL (cross-compile with cargo-xwin), task runner `just`, repo + CI + releases on GitHub.
 > Test on the Windows host via WSL interop.
+>
+> This is the original plan. Decisions made since then are in [the ADRs](decisions/), and where
+> they differ from it, they win. The working agreement for agents is in [AGENTS.md](../AGENTS.md).
 
 ## 1. What it is
 
@@ -430,8 +433,5 @@ scheduled reminders (`ToastNotifier.AddToSchedule`), custom popup, scoop manifes
 `toastback update` (self-update from GitHub Releases).
 
 ## 13. Working agreement for Claude Code
-- Start with M0. Keep each spike as small as possible, record the outcome, then build M1–M4 in order.
-- After each milestone: `just check && just test && just install`, then give me the exact manual steps to verify the acceptance criteria.
-- Prefer boring, explicit code over abstractions. No async runtime, no tokio.
-- Ask before adding crates not listed in §7, or before changing a locked decision in §2.
-- Never run `just release` or push tags without me asking.
+
+Moved to [AGENTS.md](../AGENTS.md).

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The notification spec (PLAN.md §4): serde types, defaults, validation, merging quick flags.
+//! The notification spec (docs/plan.md §4): serde types, defaults, validation, merging quick flags.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;

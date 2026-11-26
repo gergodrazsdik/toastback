@@ -1,1 +1,15 @@
 /target
+
+# Personal, machine-specific files (AGENTS.md "Local overrides")
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Secrets never belong in the repo
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/

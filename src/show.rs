@@ -13,7 +13,7 @@ use crate::{context, exec};
 #[cfg(windows)]
 use crate::{dialog, install, store, toast};
 
-/// Exit codes of `show` (PLAN.md §5).
+/// Exit codes of `show` (docs/plan.md §5).
 pub const EXIT_INVALID: u8 = 2;
 pub const EXIT_SHOW_FAILED: u8 = 3;
 pub const EXIT_NOT_INSTALLED: u8 = 4;
