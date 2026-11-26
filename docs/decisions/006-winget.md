@@ -1,6 +1,6 @@
 # 006: winget package
 
-Date: 2026-10-31. Takes winget out of PLAN.md §2's "out of scope".
+Date: 2026-10-31. Takes winget out of docs/plan.md §2's "out of scope".
 
 **Package:** `GergoDrazsdik.Toastback`, publisher `Gergő Drazsdik`.
 

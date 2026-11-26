@@ -1,6 +1,6 @@
 # 007: no bash needed in WSL
 
-Date: 2026-10-31. Changes the `bash -lc` of PLAN.md §4's callback table and the shim's first line.
+Date: 2026-10-31. Changes the `bash -lc` of docs/plan.md §4's callback table and the shim's first line.
 
 `install.sh` and the shim are plain POSIX `sh`, so they run in distros without bash, such as Alpine.
 

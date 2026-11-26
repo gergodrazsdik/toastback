@@ -93,7 +93,7 @@ pub fn main() -> ExitCode {
             return ExitCode::from(e.exit_code() as u8);
         }
     };
-    // `show`'s exit code only says whether the notification was shown (PLAN.md §2): a failed
+    // `show`'s exit code only says whether the notification was shown (docs/plan.md §2): a failed
     // write of its id is reported on stderr, but doesn't turn a shown toast into a failure
     let show = cli.is_show();
     match cli::run(cli) {
