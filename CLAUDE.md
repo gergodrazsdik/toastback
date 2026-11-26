@@ -11,7 +11,8 @@ Claude Code also loads `AGENTS.md` on its own).
   as your user-level settings allow:
   - commits: `git commit -F <file>`, with the message in a file outside the repo;
   - pushing and fetching: `git push`, `git pull`;
-  - GitHub: `gh` (pull requests with `gh pr create --body-file <file>`, `gh pr edit --body-file <file>`), `gh stack`;
+  - GitHub: `gh` (pull requests with `gh pr create --body-file <file>`, `gh pr edit --body-file <file>`), `gh stack`,
+    and `just github-settings` / `just github-settings-check`;
   - anything that starts a Windows exe: `just test`, `just run`, `just install`, `just uninstall`, `just demo`,
     `just log`, `just doctor`, the `just winget-*` recipes, `toastback`, and the built exes under `target/`.
 
