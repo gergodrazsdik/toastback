@@ -1,7 +1,7 @@
 # Agent instructions: toastback
 
-These instructions are for coding agents (Claude Code, Codex and others) working in this repo. Humans: see the
-README's [Development](README.md#development) and [Contributing](README.md#contributing) sections.
+These instructions are for coding agents (Claude Code, Codex and others) working in this repo. Humans: see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What toastback is
 
@@ -15,7 +15,8 @@ Where the truth lives:
 
 - [docs/plan.md](docs/plan.md): the original plan. §2 holds the locked decisions, §4 the spec format, §7 the allowed
   crates.
-- [docs/adr/](docs/adr/README.md): architecture decision records (ADRs), made since the plan, which refine or supersede the plan.
+- [docs/adr/](docs/adr/README.md): architecture decision records (ADRs), made since the plan, which refine or
+  supersede it.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release, and what's waiting under `[Unreleased]`.
 - [README.md](README.md): the user documentation (install, usage, the spec, limitations, troubleshooting).
 - [docs/manual-test.md](docs/manual-test.md): the checks that need a person at a Windows desktop.
@@ -26,7 +27,8 @@ pick a side yourself.
 ## Layout
 
 ```text
-AGENTS.md CLAUDE.md README.md LICENSE CHANGELOG.md SECURITY.md
+AGENTS.md CLAUDE.md README.md LICENSE CHANGELOG.md
+CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md
 Cargo.toml Cargo.lock rust-toolchain.toml build.rs justfile .cargo/config.toml
 src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/toastback-cli.rs, one module per concern
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim template
@@ -36,8 +38,9 @@ packaging/winget/    the winget manifest templates
 docs/plan.md         the original plan
 docs/adr/            architecture decision records
 docs/manual-test.md  the manual test checklist
+docs/dev-setup.md    prerequisites and local setup
 .claude/settings.json  committed Claude Code sandbox and deny rules
-.github/             workflows/ (ci.yml, release.yml), issue templates, dependabot.yml
+.github/             workflows/ (ci.yml, release.yml), issue and PR templates, CODEOWNERS, dependabot.yml
 ```
 
 Keep this tree current when you add top-level files or folders.

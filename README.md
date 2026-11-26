@@ -335,7 +335,8 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 
 ## Development
 
-Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin. `just` lists the recipes:
+Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin; the prerequisites are in
+[docs/dev-setup.md](docs/dev-setup.md). `just` lists the recipes:
 
 | Recipe | |
 |---|---|
@@ -354,10 +355,9 @@ Design notes and decisions are in [docs/adr/](docs/adr/README.md); the manual te
 
 ## Contributing
 
-Issues and pull requests are welcome. `main` only changes through pull requests whose CI (build, Windows tests,
-smoke test) passes; CI for first-time and outside contributors starts after a maintainer approves it. Please add
-a line under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything users would notice. Security problems:
-see [SECURITY.md](SECURITY.md).
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions are licensed under the
+project's GPL-3.0-or-later; there's no contributor agreement to sign. Security problems: see [SECURITY.md](SECURITY.md).
+Questions: [SUPPORT.md](SUPPORT.md).
 
 ## License
 
