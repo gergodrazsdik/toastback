@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # winget packaging, driven from WSL with the Windows winget.exe and wingetcreate.exe. Run from the repository root;
-# the `just winget-*` recipes wrap it. See docs/decisions/006-winget.md.
+# the `just winget-*` recipes wrap it. See docs/adr/0013-winget.md.
 #
 #   scripts/winget.sh setup              # check the tools and the settings the other commands need
 #   scripts/winget.sh manifest VERSION   # render the manifest of a published release, validate it
