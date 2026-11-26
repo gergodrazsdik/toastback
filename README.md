@@ -149,6 +149,7 @@ notifications.
 ```text
 toastback [show] [FILE | -] [-t TITLE] [-m BODY] [-d DETAILS] [-i ICON]
                  [--mode toast|dialog] [--scenario default|reminder|alarm|urgent] [--id ID]
+                 [--wait [--timeout DURATION]]
 ```
 
 The spec comes from `FILE`, from stdin (`-`, or when no `-t`/`-m` is given), or only from flags. Flags
@@ -161,11 +162,37 @@ override fields of the spec. `toastback` prints the notification id and exits:
 | 3 | failed to show |
 | 4 | not installed |
 
+### Waiting for an answer
+
+By default `toastback` returns at once and a click runs the button's callback later. With `--wait` it waits until
+the notification is answered and prints the answer instead of the id: the clicked button's id, or `__body` for a
+click on the toast's text. A button's callback still runs.
+
+```bash
+choice=$(toastback examples reboot-dialog | toastback --wait --timeout 10m)
+case $? in 0) echo "chose $choice" ;; 5) echo "dismissed" ;; 6) echo "no answer" ;; esac
+id=$(toastback -t "Deploy finished" -m "Click to open the log"); …; toastback wait "$id"
+```
+
+`toastback wait ID [--timeout DURATION]` waits the same way for a notification that's already shown, also one
+answered before `wait` started. `DURATION` is like `expires`: `90s`, `5m`, `1h30m`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | answered (the answer is on stdout) |
+| 2 | `wait`: no notification with that id (or an invalid `--timeout`) |
+| 5 | closed without a choice: dismissed, a dialog closed, removed (`toastback remove`), shown again under its id |
+| 6 | timed out: `--timeout` passed, or the notification expired |
+| 130 | Ctrl-C; the toast stays and its buttons still work |
+
+A toast whose banner times out moves to the notification center and can still be answered there; waiting goes on.
+
 Other commands:
 
 | Command | What it does |
 |---|---|
 | `toastback examples [NAME]` | list the built-in example specs, or print one (`> my.json` to start your own) |
+| `toastback wait ID [--timeout DURATION]` | wait until a notification is answered, see [above](#waiting-for-an-answer) |
 | `toastback log [-n N] [--id ID]` | recent events: shown, clicked, callback output and exit codes |
 | `toastback validate FILE...` | check specs (and their images) without showing them; exit 2 if any is invalid |
 | `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
@@ -229,10 +256,13 @@ that run `/usr/bin/notify-send` by its full path, and programs that send notific
 | `-p`, `-r ID` | print the notification's id (a number); replace the notification with that id |
 | hints `x-canonical-private-synchronous`, `x-dunst-stack-tag`, `synchronous` | a toast with the same tag replaces the previous one (volume and brightness scripts) |
 | hint `suppress-sound` | a silent toast |
-| `-t`, `-c`, other hints | accepted and ignored: Windows decides how long a toast stays on screen |
-| `-w`, `-A`, `--id-fd`, `--selected-action-fd`, `--activation-token-fd` | not supported yet: exit 1 |
+| `-A [NAME=]Text` | a button (at most 5); implies `-w`. The chosen action's NAME is printed (an unnamed one's number, from 1). NAME `default` is a click on the toast's text |
+| `-w` | wait until the toast is clicked or dismissed; `-t MS` limits the wait ("Wait timeout expired") |
+| `--id-fd`, `--selected-action-fd` | also write the id or the chosen action to that file descriptor (through the wrapper) |
+| `-c`, `--activation-token-fd`, other hints | accepted and ignored. `-t` without a wait too: Windows decides how long a toast stays on screen |
 
-Errors exit 1, as in notify-send. `notify-send --version` prints `notify-send 0.8.9 (toastback X.Y.Z)`: the libnotify
+Errors exit 1, and a wait exits 0 however it ends, as in notify-send. Ctrl-C during a wait removes the toast.
+`notify-send --version` prints `notify-send 0.8.9 (toastback X.Y.Z)`: the libnotify
 version whose command line it follows. In `toastback log`, these notifications have ids `ns-<number>`. From
 PowerShell or cmd: `toastback-cli notify-send …`.
 
@@ -344,7 +374,7 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 - **Images:** local PNG or JPG files (WSL or Windows paths). Keep them small, under about 200 KB and 1024 px:
   Windows silently drops images it considers too large.
 - **No dismiss callback.** Once `toastback` has exited, Windows tells nobody when a toast is dismissed or
-  times out. Only clicks run callbacks.
+  times out. Only clicks run callbacks; `--wait` reports a dismissal (exit 5), but runs nothing for it.
 - **Focus assist / Do not disturb** hides toast banners (they still land in the notification center). Use
   `"mode": "dialog"` or `"scenario": "alarm"` for prompts that must be seen.
 - **Urgent toasts** (`"scenario": "urgent"`, `notify-send -u critical`): the first one makes Windows 11 ask whether

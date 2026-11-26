@@ -8,13 +8,15 @@
 
 use std::fs::OpenOptions;
 use std::os::windows::io::IntoRawHandle as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Console::{
-    AttachConsole, CONSOLE_MODE, DISABLE_NEWLINE_AUTO_RETURN, GetConsoleMode, GetStdHandle,
-    STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
-    SetStdHandle,
+    AttachConsole, CONSOLE_MODE, CTRL_BREAK_EVENT, CTRL_C_EVENT, DISABLE_NEWLINE_AUTO_RETURN,
+    GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetConsoleMode, SetStdHandle,
 };
+use windows::core::BOOL;
 
 const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
 
@@ -85,4 +87,22 @@ fn attach_missing_streams() {
         // SAFETY: the handle is a valid console handle we own and never close.
         let _ = unsafe { SetStdHandle(which, HANDLE(file.into_raw_handle())) };
     }
+}
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "system" fn on_ctrl(kind: u32) -> BOOL {
+    if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+        return BOOL::from(true);
+    }
+    BOOL::from(false)
+}
+
+/// From now on, Ctrl-C and Ctrl-Break set a flag instead of ending the process, so a wait can
+/// stop cleanly. Returns the flag.
+pub fn catch_ctrl_c() -> &'static AtomicBool {
+    // SAFETY: the handler is a plain function that only stores to a static atomic.
+    let _ = unsafe { SetConsoleCtrlHandler(Some(on_ctrl), true) };
+    &INTERRUPTED
 }

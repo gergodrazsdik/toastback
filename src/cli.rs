@@ -20,7 +20,9 @@ Examples:
   toastback -t \"Hello\" -m \"World\"                  a toast
   toastback -t \"Build failed\" -i error             with a built-in icon
   toastback --mode dialog -t \"Hello\" -m \"World\"    a dialog instead
-  toastback examples                               ready-made specs with buttons and callbacks";
+  toastback examples                               ready-made specs with buttons and callbacks
+  toastback examples reboot-dialog | toastback --wait
+                                                   wait, and print the button chosen";
 
 /// Async Windows toasts with callbacks, for WSL and scripts.
 ///
@@ -46,8 +48,8 @@ impl Cli {
         let mut i = 1;
         while let Some(a) = args.get(i).and_then(|a| a.to_str()) {
             match a {
-                "--distro" | "--user" | "--cwd" => i += 2,
-                _ if ["--distro=", "--user=", "--cwd="]
+                "--distro" | "--user" | "--cwd" | "--caller-pid" => i += 2,
+                _ if ["--distro=", "--user=", "--cwd=", "--caller-pid="]
                     .iter()
                     .any(|p| a.starts_with(p)) =>
                 {
@@ -148,9 +150,20 @@ struct CtxArgs {
     /// Linux working directory of the caller
     #[arg(long, global = true)]
     cwd: Option<String>,
+    /// Linux process id of the shim: a wait stops when it's gone (Ctrl-C)
+    #[arg(long, global = true, hide = true)]
+    caller_pid: Option<u32>,
 }
 
 impl CtxArgs {
+    /// The WSL process that started us, for a wait to watch.
+    fn caller(&self) -> Option<crate::wait::Caller> {
+        Some(crate::wait::Caller {
+            distro: self.distro.clone().filter(|d| !d.is_empty())?,
+            pid: self.caller_pid?,
+        })
+    }
+
     fn context(&self) -> Context {
         let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.is_empty());
         Context {
@@ -184,6 +197,13 @@ pub struct ShowArgs {
     /// Notification id (default: generated)
     #[arg(long)]
     pub id: Option<String>,
+    /// Wait for the answer and print it instead of the id: the clicked button's id, or __body.
+    /// Exit 5: closed without a choice; 6: timed out
+    #[arg(long)]
+    pub wait: bool,
+    /// With --wait: stop waiting after this long (s, m, h, d, e.g. 90s or 1h30m)
+    #[arg(long, requires = "wait", value_name = "DURATION")]
+    pub timeout: Option<String>,
 }
 
 impl ShowArgs {
@@ -211,6 +231,14 @@ enum Command {
         /// notify-send's arguments, as given
         #[arg(skip)]
         args: Vec<std::ffi::OsString>,
+    },
+    /// Wait until a notification is answered, and print the answer (as `show --wait` does)
+    Wait {
+        /// The notification's id
+        id: String,
+        /// Stop waiting after this long (s, m, h, d, e.g. 90s or 1h30m)
+        #[arg(long, value_name = "DURATION")]
+        timeout: Option<String>,
     },
     /// Install for the current user: copy the exes, register them, write the WSL shim and the
     /// notify-send wrapper
@@ -296,14 +324,40 @@ pub fn run(cli: Cli) -> Result<u8> {
 
     let store = Store::open()?;
     let ctx = cli.ctx.context();
+    let caller = cli.ctx.caller();
     if let Ok(pruned) = store.prune(unix_now())
         && !pruned.is_empty()
     {
         let _ = store.log("pruned", serde_json::json!({ "ids": pruned }));
     }
     match cli.command {
-        Command::Show(args) => Ok(show::show(&store, &args, &ctx)),
-        Command::NotifySend { args } => Ok(crate::notify_send::run(&store, &args, &ctx)),
+        Command::Show(args) => Ok(show::show(&store, &args, &ctx, caller.as_ref())),
+        Command::NotifySend { args } => Ok(crate::notify_send::run(
+            &store,
+            &args,
+            &ctx,
+            caller.as_ref(),
+        )),
+        Command::Wait { id, timeout } => {
+            let limit = match timeout
+                .as_deref()
+                .map(crate::spec::parse_duration)
+                .transpose()
+            {
+                Ok(l) => l,
+                Err(e) => {
+                    errln!("toastback: --timeout: {e:#}");
+                    return Ok(show::EXIT_INVALID);
+                }
+            };
+            match crate::wait::wait(&store, &id, limit, caller.as_ref()) {
+                Some(outcome) => Ok(crate::wait::report(&outcome)),
+                None => {
+                    errln!("toastback: no notification {id}");
+                    Ok(show::EXIT_INVALID)
+                }
+            }
+        }
         Command::Install {
             wsl,
             add_to_path,

@@ -146,12 +146,31 @@ covered by the smoke job, so here they only need to be checked once.
 47. `id=$(notify-send -p "Copying…")`, then `notify-send -r "$id" "Copy done"`: the second toast replaces the first.
     `notify-send -h string:x-dunst-stack-tag:vol "Volume 40%"`, then the same with `"Volume 50%"`: one toast is left.
     `notify-send -e Transient` is gone from the notification center after about 10 seconds.
-48. `notify-send -A yes=Yes Question` and `notify-send -w x` exit 1 with "isn't supported by toastback yet";
-    `notify-send --version` prints `notify-send 0.8.9 (toastback <version>)`.
+48. `notify-send -A yes=Yes -A No -A default=Open Question` shows **Yes** and **No**: clicking **Yes** prints `yes`,
+    **No** prints `2`, the text prints `default`, dismissing it prints nothing; each exits 0. `notify-send -w -t 3000 x`
+    prints "Wait timeout expired" after 3 seconds. `notify-send --version` prints
+    `notify-send 0.8.9 (toastback <version>)`.
 49. `toastback install --no-notify-send` removes the wrapper, and `notify-send` is the distro's own again (or not
     found); `just install` doesn't bring it back, and `doctor` says "off". `toastback install --notify-send` does.
     With a file of your own at `~/.local/bin/notify-send`, `install` leaves it alone with a note and `doctor` warns.
     `toastback uninstall` removes the wrapper; your own file stays.
+
+## Waiting
+
+50. `toastback examples reboot-dialog | toastback --wait`: choosing a button prints its id and exits 0 (and its
+    callback runs, see `toastback log`); closing the dialog with its X exits 5 and prints nothing.
+51. `toastback examples deploy | toastback --wait`: clicking **Deploy** prints `deploy`; clicking the text opens the
+    details dialog, and the button chosen there is printed. Let the banner time out, then click the button in the
+    notification center: still printed. Dismissing the toast (its X, or "clear" in the notification center) exits 5
+    within about 6 seconds.
+52. In an interactive WSL terminal, `toastback --wait -t Ctrl-C` then Ctrl-C: the prompt returns with exit 130, and
+    within about a second `tasklist.exe | grep toastback` finds no waiting process. The toast stays. The same with
+    `x=$(toastback --wait -t Ctrl-C)`. In PowerShell, `toastback-cli --wait -t Ctrl-C` then Ctrl-C: exit 130.
+53. `id=$(toastback -t "Later")`, click it, then `toastback wait "$id"` prints `__body` at once.
+    `toastback wait nope` exits 2. `toastback --wait --timeout 5s -t x` exits 6 after 5 seconds.
+54. Through the wrapper: `notify-send -p --id-fd=3 --selected-action-fd=4 -A ok=OK Q 3>/tmp/id 4>/tmp/act`, click
+    **OK**: stdout has the id and `ok`, `/tmp/id` the id, `/tmp/act` `ok`. The same in a distro without bash
+    (Alpine).
 
 ## Uninstall
 

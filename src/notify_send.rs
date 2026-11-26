@@ -4,7 +4,13 @@
 //! The parser follows GLib's option rules, like notify-send itself: options before or after the
 //! positionals, `--name=VALUE` or `--name VALUE`, `-tVALUE` or `-t VALUE`, clustered flags (`-pe`),
 //! `--` ends the options, and a value is taken even when it starts with `-`. Every error prints
-//! notify-send's message and exits 1. Output appears only with `-p` (the id), as in notify-send.
+//! notify-send's message and exits 1. Output appears only with `-p` (the id) and for a chosen
+//! action, as in notify-send. `-w` and `-A` wait with [`crate::wait`].
+//!
+//! `--id-fd` and `--selected-action-fd` name file descriptors of the calling Linux process, which
+//! the Windows exe can't reach. The notify-send wrapper passes [`RECORDS_FLAG`] first: everything
+//! for stdout then comes as `out TEXT` lines and everything for a descriptor as `fd N TEXT`, and the
+//! wrapper delivers them.
 
 use std::ffi::OsString;
 
@@ -18,6 +24,8 @@ pub const EXIT_ERROR: u8 = 1;
 const ID_PREFIX: &str = "ns-";
 /// `--transient`: how long the toast stays in the notification center.
 const TRANSIENT_EXPIRES: &str = "10s";
+/// First argument from the notify-send wrapper: print records instead of plain output.
+pub const RECORDS_FLAG: &str = "--toastback-records";
 
 const HELP: &str = "\
 Usage:
@@ -28,7 +36,8 @@ toastback's notify-send: libnotify's command line, shown as a Windows toast.
 Options:
   -?, --help                     Show this help
   -u, --urgency=LEVEL            low (silent), normal or critical (urgent, with a Dismiss button)
-  -t, --expire-time=TIME         Accepted; Windows decides how long a toast stays on screen
+  -t, --expire-time=TIME         With --wait: wait at most this many milliseconds. Windows decides
+                                 how long a toast stays on screen
   -a, --app-name=APP_NAME        Shown as the toast's attribution line
   -i, --icon=ICON                A PNG or JPG path or file:// URI, or dialog-information,
                                  dialog-warning, dialog-error, dialog-question (other icon
@@ -43,8 +52,14 @@ Options:
   -p, --print-id                 Print the notification ID
   -r, --replace-id=REPLACE_ID    Replace the notification with this ID
   -v, --version                  The libnotify version this follows, and toastback's
-  -w, -A, --wait, --action, --id-fd, --selected-action-fd, --activation-token-fd
-                                 Not supported yet: exit 1
+  --id-fd=FD                     Also write the ID to this file descriptor
+  -w, --wait                     Wait until the notification is clicked or closed (with -t: at
+                                 most that many milliseconds)
+  -A, --action=[NAME=]Text...    A button; implies --wait. The chosen action's NAME (or its
+                                 number, from 1) is printed. NAME default: a click on the toast's
+                                 text. At most 5 buttons
+  --selected-action-fd=FD        Also write the chosen action to this file descriptor
+  --activation-token-fd=FD       Accepted; Windows has no activation token
 ";
 
 #[derive(Debug, PartialEq)]
@@ -63,6 +78,26 @@ pub struct Request {
     /// From `-r` or a stack tag hint; `None`: a new number.
     pub number: Option<u32>,
     pub print_id: bool,
+    /// `-w` or `-A`: wait for the answer, at most `wait_limit`.
+    pub wait: bool,
+    pub wait_limit: Option<std::time::Duration>,
+    /// `(answer, NAME)` for each action: a button id or `__body`, and what to print for it.
+    pub actions: Vec<(String, String)>,
+    pub id_fd: Option<i32>,
+    pub action_fd: Option<i32>,
+    /// Output as records for the wrapper ([`RECORDS_FLAG`]).
+    pub records: bool,
+}
+
+impl Request {
+    /// What notify-send prints for an answer: the action's NAME. Nothing for a button or a click
+    /// that isn't one of the actions (the Dismiss button, the text without a `default` action).
+    pub fn action_name(&self, answer: &str) -> Option<&str> {
+        self.actions
+            .iter()
+            .find(|(a, _)| a == answer)
+            .map(|(_, name)| name.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,8 +166,11 @@ struct Raw {
     print_id: bool,
     replace_id: Option<i64>,
     version: bool,
-    /// Options this version can't honour yet (`--wait`, `--action`, the fd options).
-    unsupported: Option<String>,
+    expire_time: Option<i64>,
+    wait: bool,
+    actions: Vec<String>,
+    id_fd: Option<i64>,
+    action_fd: Option<i64>,
     positionals: Vec<String>,
 }
 
@@ -146,10 +184,7 @@ impl Raw {
         match o.long {
             "help" => return Ok(false),
             "urgency" => self.urgency = Some(parse_urgency(value.as_deref().unwrap_or_default())?),
-            "expire-time" => {
-                // Windows decides how long a toast stays on screen; only checked
-                int()?;
-            }
+            "expire-time" => self.expire_time = Some(int()?),
             "app-name" => self.app_name = value,
             "icon" => self.icon = value,
             "app-icon" => self.app_icon = value,
@@ -161,11 +196,15 @@ impl Raw {
             "print-id" => self.print_id = true,
             "replace-id" => self.replace_id = Some(int()?),
             "version" => self.version = true,
+            "wait" => self.wait = true,
+            "action" => self.actions.extend(value),
+            "id-fd" => self.id_fd = Some(int()?),
+            "selected-action-fd" => self.action_fd = Some(int()?),
+            // Windows has no activation token to hand out
             _ => {
                 if o.kind == Kind::Int {
                     int()?;
                 }
-                self.unsupported.get_or_insert_with(|| shown.to_string());
             }
         }
         Ok(true)
@@ -185,6 +224,10 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
             })
         })
         .collect::<Result<Vec<String>, String>>()?;
+    let (records, args) = match args.split_first() {
+        Some((first, rest)) if first == RECORDS_FLAG => (true, rest),
+        _ => (false, args.as_slice()),
+    };
     let mut raw = Raw::default();
     let mut i = 0;
     let mut options_done = false;
@@ -259,12 +302,9 @@ pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
     if raw.version {
         return Ok(Parsed::Version);
     }
-    if let Some(o) = &raw.unsupported {
-        return Err(format!(
-            "notify-send: {o} isn't supported by toastback yet (no --wait, --action or --*-fd)"
-        ));
-    }
-    request(raw).map(|r| Parsed::Show(Box::new(r)))
+    let mut req = request(raw)?;
+    req.records = records;
+    Ok(Parsed::Show(Box::new(req)))
 }
 
 /// Map the parsed options onto a spec.
@@ -316,7 +356,49 @@ fn request(raw: Raw) -> Result<Request, String> {
         }
     }
 
+    // -A [NAME=]Text: a button, or with NAME `default`, a click on the toast's text. Unnamed
+    // actions are numbered from 1 (libnotify's help says 0; its code counts from 1).
+    let mut buttons = Vec::new();
+    let mut actions = Vec::new();
+    for (i, a) in raw.actions.iter().enumerate() {
+        let (name, label) = match a.split_once('=') {
+            Some((name, label)) => (name.trim().to_string(), label.to_string()),
+            None => ((i + 1).to_string(), a.clone()),
+        };
+        if name == "default" {
+            actions.push((crate::spec::BODY_ACTION.to_string(), name));
+            continue;
+        }
+        let id = format!("a{}", buttons.len() + 1);
+        let label = if label.trim().is_empty() {
+            name.clone()
+        } else {
+            label
+        };
+        buttons.push(Button {
+            id: id.clone(),
+            label,
+            ..Default::default()
+        });
+        actions.push((id, name));
+    }
+    if buttons.len() > crate::spec::MAX_BUTTONS {
+        return Err(format!(
+            "toastback shows at most {} actions as buttons",
+            crate::spec::MAX_BUTTONS
+        ));
+    }
     let critical = urgency == Urgency::Critical;
+    // the urgent scenario needs a button
+    if critical && buttons.is_empty() {
+        buttons.push(Button {
+            id: "dismiss".into(),
+            label: "Dismiss".into(),
+            ..Default::default()
+        });
+    }
+    let wait = raw.wait || !actions.is_empty();
+    let fd = |n: Option<i64>| n.and_then(|n| i32::try_from(n).ok()).filter(|n| *n > 0);
     let spec = Spec {
         title,
         body,
@@ -331,16 +413,7 @@ fn request(raw: Raw) -> Result<Request, String> {
         } else {
             Sound::Default
         },
-        // a scenario other than default needs a button
-        buttons: if critical {
-            vec![Button {
-                id: "dismiss".into(),
-                label: "Dismiss".into(),
-                ..Default::default()
-            }]
-        } else {
-            Vec::new()
-        },
+        buttons,
         expires: transient.then(|| TRANSIENT_EXPIRES.into()),
         ..Default::default()
     };
@@ -359,7 +432,44 @@ fn request(raw: Raw) -> Result<Request, String> {
         icons,
         number,
         print_id: raw.print_id,
+        wait,
+        // libnotify waits forever with 0 (never) and the server's default (-1)
+        wait_limit: raw
+            .expire_time
+            .filter(|t| wait && *t > 0)
+            .map(|t| std::time::Duration::from_millis(t.unsigned_abs())),
+        actions,
+        id_fd: fd(raw.id_fd),
+        action_fd: fd(raw.action_fd),
+        records: false,
     })
+}
+
+/// Prints for notify-send: plain, or as records for the wrapper.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows `run` prints
+struct Output {
+    records: bool,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Output {
+    /// The lines to print for `text`, sent to stdout (`to_stdout`) and/or descriptor `fd`.
+    fn lines(&self, text: &str, to_stdout: bool, fd: Option<i32>) -> Vec<String> {
+        // a record is one line
+        let text = text.replace(['\n', '\r'], " ");
+        let mut out = Vec::new();
+        if to_stdout {
+            out.push(if self.records {
+                format!("out {text}")
+            } else {
+                text.clone()
+            });
+        }
+        if let (true, Some(fd)) = (self.records, fd) {
+            out.push(format!("fd {fd} {text}"));
+        }
+        out
+    }
 }
 
 /// The id of notification number `n`.
@@ -617,8 +727,14 @@ fn tag_number(tag: &str) -> u32 {
 
 /// Show what notify-send's command line asks for. Returns the exit code.
 #[cfg(windows)]
-pub fn run(store: &crate::store::Store, args: &[OsString], ctx: &crate::spec::Context) -> u8 {
-    use crate::{install, show};
+pub fn run(
+    store: &crate::store::Store,
+    args: &[OsString],
+    ctx: &crate::spec::Context,
+    caller: Option<&crate::wait::Caller>,
+) -> u8 {
+    use crate::wait::Outcome;
+    use crate::{install, show, toast, wait};
 
     let req = match parse(args) {
         Ok(Parsed::Help) => {
@@ -638,15 +754,25 @@ pub fn run(store: &crate::store::Store, args: &[OsString], ctx: &crate::spec::Co
             return EXIT_ERROR;
         }
     };
-    let Request {
-        mut spec,
-        icons,
-        number,
-        print_id,
-    } = req;
+    if !req.records && (req.id_fd.is_some() || req.action_fd.is_some()) {
+        errln!(
+            "notify-send: --id-fd and --selected-action-fd work through toastback's notify-send wrapper only"
+        );
+        return EXIT_ERROR;
+    }
+    let output = Output {
+        records: req.records,
+    };
+    let print = |text: &str, to_stdout: bool, fd: Option<i32>| {
+        for line in output.lines(text, to_stdout, fd) {
+            outln!("{line}");
+        }
+    };
+    let mut spec = req.spec.clone();
+    let number = req.number;
     spec.context.fill_from(ctx);
     // notify-send never fails over an icon: one that can't be read is left out
-    let icon = choose_icon(&icons, |p| {
+    let icon = choose_icon(&req.icons, |p| {
         crate::context::to_windows_path(p, &spec.context)
             .is_ok_and(|w| std::fs::metadata(w).is_ok_and(|m| m.is_file()))
     });
@@ -677,18 +803,34 @@ pub fn run(store: &crate::store::Store, args: &[OsString], ctx: &crate::spec::Co
             return EXIT_ERROR;
         }
     }
-    match show::show_spec(store, spec) {
-        Ok(_) => {
-            if print_id {
-                outln!("{number}");
-            }
-            0
-        }
+    let id = match show::show_spec(store, spec) {
+        Ok(id) => id,
         Err((_, e)) => {
             errln!("Failed to show notification: {e:#}");
-            EXIT_ERROR
+            return EXIT_ERROR;
         }
+    };
+    print(&number.to_string(), req.print_id, req.id_fd);
+    if !req.wait {
+        return 0;
     }
+    // notify-send exits 0 however the wait ends
+    match wait::wait(store, &id, req.wait_limit, caller) {
+        Some(Outcome::Answer(a)) => {
+            if let Some(name) = req.action_name(&a) {
+                print(name, true, req.action_fd);
+            }
+        }
+        Some(Outcome::TimedOut) => errln!("Wait timeout expired"),
+        Some(Outcome::Interrupted) => {
+            // as libnotify does on SIGINT
+            errln!("Wait cancelled, closing notification");
+            let _ = toast::remove(&id);
+            let _ = store.remove_pending(&id);
+        }
+        Some(Outcome::Closed(_)) | None => {}
+    }
+    0
 }
 
 #[cfg(test)]
@@ -791,18 +933,83 @@ mod tests {
     }
 
     #[test]
-    fn wait_and_actions_are_refused_for_now() {
-        for args in [
-            &["-w", "T"][..],
-            &["--action=yes=Yes", "T"],
-            &["-A", "Yes", "T"],
-            &["--id-fd", "3", "T"],
-            &["--selected-action-fd=3", "T"],
-            &["--activation-token-fd", "3", "T"],
-        ] {
-            let e = err(args);
-            assert!(e.contains("isn't supported by toastback yet"), "{e}");
-        }
+    fn actions_and_wait() {
+        let r = req(&["-A", "yes=Yes", "-A", "No", "-A", "default=Open", "Q"]);
+        assert!(r.wait);
+        assert_eq!(r.wait_limit, None);
+        let labels: Vec<_> = r
+            .spec
+            .buttons
+            .iter()
+            .map(|b| (b.id.as_str(), b.label.as_str()))
+            .collect();
+        assert_eq!(labels, [("a1", "Yes"), ("a2", "No")]);
+        // unnamed actions are numbered from 1, counting every action
+        assert_eq!(r.action_name("a1"), Some("yes"));
+        assert_eq!(r.action_name("a2"), Some("2"));
+        assert_eq!(r.action_name("__body"), Some("default"));
+        assert_eq!(r.action_name("dismiss"), None);
+        r.spec.validate().unwrap();
+        // no `default` action: a click on the text prints nothing
+        assert_eq!(req(&["-A", "ok=OK", "Q"]).action_name("__body"), None);
+        // an empty label shows the name
+        assert_eq!(req(&["-A", "later=", "Q"]).spec.buttons[0].label, "later");
+
+        // -t limits a wait only
+        let limit = |args: &[&str]| req(args).wait_limit;
+        assert_eq!(
+            limit(&["-w", "-t", "5000", "T"]),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(limit(&["-t", "5000", "T"]), None);
+        assert_eq!(limit(&["-w", "-t", "0", "T"]), None);
+        assert_eq!(limit(&["-w", "-t", "-1", "T"]), None);
+        let r = req(&["-w", "T"]);
+        assert!(r.wait && r.actions.is_empty());
+        assert!(!req(&["T"]).wait);
+
+        // critical gets Dismiss only when there are no buttons
+        let r = req(&["-u", "critical", "-A", "fix=Fix it", "Disk full"]);
+        assert_eq!(r.spec.buttons.len(), 1);
+        assert_eq!(r.spec.buttons[0].label, "Fix it");
+        let r = req(&["-u", "critical", "-A", "default=Open", "Disk full"]);
+        assert_eq!(r.spec.buttons[0].label, "Dismiss");
+        r.spec.validate().unwrap();
+
+        let six: Vec<String> = (1..=6).map(|i| format!("-A=b{i}")).collect();
+        let mut args: Vec<&str> = six.iter().map(String::as_str).collect();
+        args.push("T");
+        assert!(err(&args).contains("at most 5"));
+    }
+
+    #[test]
+    fn descriptors_and_records() {
+        let r = req(&[
+            RECORDS_FLAG,
+            "-p",
+            "--id-fd=3",
+            "--selected-action-fd",
+            "4",
+            "T",
+        ]);
+        assert!(r.records && r.print_id);
+        assert_eq!((r.id_fd, r.action_fd), (Some(3), Some(4)));
+        // only as the first argument
+        assert_eq!(
+            err(&["T", RECORDS_FLAG]),
+            format!("Unknown option {RECORDS_FLAG}")
+        );
+        assert!(!req(&["--id-fd", "3", "T"]).records);
+        req(&["--activation-token-fd", "5", "T"]);
+        assert!(err(&["--id-fd", "x", "T"]).contains("Cannot parse integer"));
+
+        let plain = Output { records: false };
+        assert_eq!(plain.lines("42", true, Some(3)), ["42"]);
+        assert!(plain.lines("42", false, Some(3)).is_empty());
+        let records = Output { records: true };
+        assert_eq!(records.lines("42", true, Some(3)), ["out 42", "fd 3 42"]);
+        assert_eq!(records.lines("a\nb", false, Some(4)), ["fd 4 a b"]);
+        assert_eq!(records.lines("x", true, None), ["out x"]);
     }
 
     #[test]

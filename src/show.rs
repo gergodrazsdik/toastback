@@ -20,7 +20,19 @@ pub const EXIT_NOT_INSTALLED: u8 = 4;
 
 /// Read the spec, merge flags and context, validate, show. Prints the id; returns the exit code.
 #[cfg(windows)]
-pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
+pub fn show(
+    store: &store::Store,
+    args: &ShowArgs,
+    ctx: &Context,
+    caller: Option<&crate::wait::Caller>,
+) -> u8 {
+    let limit = match args.timeout.as_deref().map(crate::spec::parse_duration) {
+        Some(Err(e)) => {
+            errln!("toastback: --timeout: {e:#}");
+            return EXIT_INVALID;
+        }
+        l => l.and_then(Result::ok),
+    };
     let spec = match load_spec(args, ctx) {
         Ok(s) => s,
         Err(e) => {
@@ -40,6 +52,11 @@ pub fn show(store: &store::Store, args: &ShowArgs, ctx: &Context) -> u8 {
         }
     }
     match show_spec(store, spec) {
+        Ok(id) if args.wait => match crate::wait::wait(store, &id, limit, caller) {
+            Some(outcome) => crate::wait::report(&outcome),
+            // removed before the first look: nothing was chosen
+            None => crate::wait::EXIT_CLOSED,
+        },
         Ok(id) => {
             outln!("{id}");
             0
@@ -200,6 +217,7 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
         icon_path,
         image_path,
         dialog_open: false,
+        answer: None,
         spec,
     };
     store.save_pending(&pending).map_err(failed)?;

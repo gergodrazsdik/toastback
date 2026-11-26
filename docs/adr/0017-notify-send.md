@@ -1,6 +1,6 @@
 # 0017: notify-send: a subcommand, a wrapper installed by default, and an opt-in wait
 
-- Status: accepted
+- Status: accepted, amended by [0018](0018-wait.md) (the wait, `-w`, `-A` and the descriptors)
 - Date: 2026-11-26
 
 ## Context and problem statement

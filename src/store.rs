@@ -43,6 +43,10 @@ pub struct Pending {
     /// up to a day past expiry, and `prune` keeps the file that long.
     #[serde(default)]
     pub dialog_open: bool,
+    /// What the click that claimed it chose: a button id or `__body`. `None` while not `done`,
+    /// or when a dialog was closed without a choice. `toastback wait` reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 /// The fields `prune` needs, read leniently: a file written by a newer version still parses.
@@ -204,8 +208,15 @@ impl Store {
     /// Take the click for the notification shown with `token`: mark it done, atomically, so two
     /// clicks (or a click and a dialog) never both run its callback. `from_dialog`: the choice
     /// was made in a dialog, which may count past `expires` (see [`Store::set_dialog_open`]); a
-    /// late toast click or a replayed URI doesn't.
-    pub fn claim(&self, id: &str, token: &str, now: u64, from_dialog: bool) -> Result<Claim> {
+    /// late toast click or a replayed URI doesn't. `answer` is recorded for `toastback wait`.
+    pub fn claim(
+        &self,
+        id: &str,
+        token: &str,
+        now: u64,
+        from_dialog: bool,
+        answer: Option<&str>,
+    ) -> Result<Claim> {
         let _lock = self.lock_pending()?;
         let Some(mut p) = self.load_pending(id)? else {
             return Ok(Claim::Gone);
@@ -221,6 +232,7 @@ impl Store {
         }
         p.done = true;
         p.dialog_open = false;
+        p.answer = answer.map(str::to_string);
         // the caller has its copy; what's left only has to recognize a second click
         p.spec.forget_env();
         self.write_pending(&p)?;
@@ -459,7 +471,9 @@ fn lock_file(path: &Path, wait: Duration) -> Result<Option<LockGuard>> {
 
 /// The last second a click still counts: `expires_at`, or a day later for a choice in a dialog
 /// that opened before it.
-fn deadline(expires_at: u64, dialog_grace: bool) -> u64 {
+/// Until when a notification can be clicked: `expires_at`, plus a grace period for a dialog that
+/// opened in time.
+pub fn deadline(expires_at: u64, dialog_grace: bool) -> u64 {
     if dialog_grace {
         expires_at.saturating_add(DIALOG_GRACE_SECS)
     } else {
@@ -602,6 +616,7 @@ mod tests {
             icon_path: None,
             image_path: None,
             dialog_open: false,
+            answer: None,
         }
     }
 
@@ -673,10 +688,12 @@ mod tests {
         let s = temp_store("claim");
         let p = pending("x", 100);
         s.save_pending(&p).unwrap();
-        let claim = |t: &str| s.claim("x", t, 50, false).unwrap();
+        let claim = |t: &str| s.claim("x", t, 50, false, Some("ok")).unwrap();
         assert!(matches!(claim("wrong"), Claim::Replaced));
         assert!(matches!(claim(&p.token), Claim::Claimed));
-        assert!(s.load_pending("x").unwrap().unwrap().done);
+        let claimed = s.load_pending("x").unwrap().unwrap();
+        assert!(claimed.done);
+        assert_eq!(claimed.answer.as_deref(), Some("ok"));
         assert!(matches!(claim(&p.token), Claim::Done));
         // shown again under the same id: the old token is no use, the new one works
         let again = pending("x", 100);
@@ -688,7 +705,7 @@ mod tests {
         // ids that can't name a pending file are never found
         for bad in ["NUL", "com1.json", "a/b", "a b", ""] {
             assert!(
-                matches!(s.claim(bad, "t", 50, false).unwrap(), Claim::Gone),
+                matches!(s.claim(bad, "t", 50, false, None).unwrap(), Claim::Gone),
                 "{bad}"
             );
             assert!(!s.has_pending(bad));
@@ -706,7 +723,7 @@ mod tests {
                 .map(|_| {
                     let (s, t) = (s.clone(), p.token.clone());
                     std::thread::spawn(move || {
-                        matches!(s.claim("x", &t, 50, false).unwrap(), Claim::Claimed)
+                        matches!(s.claim("x", &t, 50, false, None).unwrap(), Claim::Claimed)
                     })
                 })
                 .collect::<Vec<_>>()
@@ -724,14 +741,14 @@ mod tests {
         let toast = pending("toast", 100);
         s.save_pending(&toast).unwrap();
         assert!(matches!(
-            s.claim("toast", &toast.token, 101, false).unwrap(),
+            s.claim("toast", &toast.token, 101, false, None).unwrap(),
             Claim::Expired
         ));
         // the last second still counts
         let edge = pending("edge", 100);
         s.save_pending(&edge).unwrap();
         assert!(matches!(
-            s.claim("edge", &edge.token, 100, false).unwrap(),
+            s.claim("edge", &edge.token, 100, false, None).unwrap(),
             Claim::Claimed
         ));
 
@@ -739,17 +756,17 @@ mod tests {
         s.save_pending(&dlg).unwrap();
         s.set_dialog_open("dlg", &dlg.token, 90).unwrap();
         assert!(matches!(
-            s.claim("dlg", &dlg.token, 101 + DIALOG_GRACE_SECS, true)
+            s.claim("dlg", &dlg.token, 101 + DIALOG_GRACE_SECS, true, None)
                 .unwrap(),
             Claim::Expired
         ));
         // only the dialog's own choice gets the grace, not a late toast click or a replayed URI
         assert!(matches!(
-            s.claim("dlg", &dlg.token, 5000, false).unwrap(),
+            s.claim("dlg", &dlg.token, 5000, false, None).unwrap(),
             Claim::Expired
         ));
         assert!(matches!(
-            s.claim("dlg", &dlg.token, 5000, true).unwrap(),
+            s.claim("dlg", &dlg.token, 5000, true, None).unwrap(),
             Claim::Claimed
         ));
 
@@ -814,14 +831,14 @@ mod tests {
         let raw = || fs::read_to_string(s.pending_file("x")).unwrap();
         assert!(raw().contains("ghp_secret"));
         assert!(matches!(
-            s.claim("x", &p.token, 50, false).unwrap(),
+            s.claim("x", &p.token, 50, false, None).unwrap(),
             Claim::Claimed
         ));
         assert!(!raw().contains("ghp_secret"), "{}", raw());
         // still readable, and a second click is still recognized
         assert!(s.load_pending("x").unwrap().unwrap().done);
         assert!(matches!(
-            s.claim("x", &p.token, 50, false).unwrap(),
+            s.claim("x", &p.token, 50, false, None).unwrap(),
             Claim::Done
         ));
         fs::remove_dir_all(s.root()).unwrap();

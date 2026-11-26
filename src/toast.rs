@@ -155,6 +155,21 @@ mod imp {
         Ok(())
     }
 
+    /// Is the toast still on screen or in the notification center? One the user dismissed isn't,
+    /// and neither is one that was clicked (Windows removes it before the click is handled).
+    pub fn in_center(id: &str) -> Result<bool> {
+        let history =
+            ToastNotificationManager::History()?.GetHistoryWithId(&HSTRING::from(AUMID))?;
+        let (want, group) = (HSTRING::from(tag(id)), HSTRING::from(GROUP));
+        for i in 0..history.Size()? {
+            let t = history.GetAt(i)?;
+            if t.Tag()? == want && t.Group()? == group {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Remove one toast from Action Center. Missing toasts are fine.
     pub fn remove(id: &str) -> Result<()> {
         ToastNotificationManager::History()?.RemoveGroupedTagWithId(
