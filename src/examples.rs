@@ -9,7 +9,7 @@ pub struct Example {
 }
 
 /// Simplest first. Every `examples/*.json` is either here or in [`REPO_ONLY`].
-pub const BUILTIN: [Example; 7] = [
+pub const BUILTIN: [Example; 8] = [
     Example {
         name: "simple",
         description: "a plain toast: title, body and a source line, no sound",
@@ -29,6 +29,11 @@ pub const BUILTIN: [Example; 7] = [
         name: "deploy",
         description: "a question with details and data; the button runs a WSL command",
         json: include_str!("../examples/deploy.json"),
+    },
+    Example {
+        name: "progress",
+        description: "a progress bar; move it with `toastback update progress-demo --progress 60%`",
+        json: include_str!("../examples/progress.json"),
     },
     Example {
         name: "export",

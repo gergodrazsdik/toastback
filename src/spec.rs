@@ -32,6 +32,8 @@ pub struct Spec {
     pub attribution: Option<String>,
     pub scenario: Scenario,
     pub sound: Sound,
+    pub duration: ToastDuration,
+    pub progress: Option<Progress>,
     pub expires: Option<String>,
     pub on_click: Option<OnClick>,
     pub buttons: Vec<Button>,
@@ -68,6 +70,84 @@ pub enum Sound {
     Silent,
     Alarm,
     Reminder,
+}
+
+/// How long the banner stays on screen: Windows' `short` (its notification setting, 5 s by
+/// default) or `long` (about 25 s).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ToastDuration {
+    #[default]
+    Short,
+    Long,
+}
+
+/// A toast's progress bar (ADR 0019). `toastback update` changes it in place.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Progress {
+    pub value: ProgressValue,
+    /// The line under the bar ("Copying…").
+    #[serde(default)]
+    pub status: Option<String>,
+    /// The line above the bar ("backup.tar").
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Shown instead of the percentage ("4 of 10").
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// `0.0`–`1.0`, or `"indeterminate"` (a moving bar).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProgressValue {
+    Fraction(f64),
+    Indeterminate(Indeterminate),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Indeterminate {
+    Indeterminate,
+}
+
+impl ProgressValue {
+    /// `0.4`, `40%` or `indeterminate`, as on the command line.
+    pub fn parse(s: &str) -> Result<ProgressValue> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("indeterminate") {
+            return Ok(ProgressValue::Indeterminate(Indeterminate::Indeterminate));
+        }
+        let v = match s.strip_suffix('%') {
+            Some(pct) => pct.trim().parse::<f64>().map(|p| p / 100.0),
+            None => s.parse::<f64>(),
+        }
+        .map_err(|_| {
+            anyhow::anyhow!("progress {s:?}: use 0 to 1, a percentage (40%) or indeterminate")
+        })?;
+        let v = ProgressValue::Fraction(v);
+        v.check()?;
+        Ok(v)
+    }
+
+    fn check(&self) -> Result<()> {
+        if let ProgressValue::Fraction(v) = self {
+            ensure!(
+                v.is_finite() && (0.0..=1.0).contains(v),
+                "progress value {v}: use 0 to 1, or \"indeterminate\""
+            );
+        }
+        Ok(())
+    }
+
+    /// What Windows' progress bar takes: `0.4`, or `indeterminate`.
+    pub fn to_xml_value(self) -> String {
+        match self {
+            ProgressValue::Fraction(v) => format!("{v}"),
+            ProgressValue::Indeterminate(_) => "indeterminate".into(),
+        }
+    }
 }
 
 /// A built-in icon that `icon` can name instead of an image path.
@@ -282,6 +362,9 @@ pub struct QuickFlags {
     pub icon: Option<String>,
     pub mode: Option<Mode>,
     pub scenario: Option<Scenario>,
+    pub duration: Option<ToastDuration>,
+    pub progress: Option<ProgressValue>,
+    pub progress_status: Option<String>,
 }
 
 impl Spec {
@@ -310,6 +393,21 @@ impl Spec {
         }
         if let Some(s) = f.scenario {
             self.scenario = s;
+        }
+        if let Some(d) = f.duration {
+            self.duration = d;
+        }
+        if let Some(v) = f.progress {
+            let p = self.progress.get_or_insert(Progress {
+                value: v,
+                status: None,
+                title: None,
+                label: None,
+            });
+            p.value = v;
+        }
+        if let (Some(s), Some(p)) = (&f.progress_status, self.progress.as_mut()) {
+            p.status = Some(s.clone());
         }
     }
 
@@ -402,6 +500,13 @@ impl Spec {
                 "scenario {} needs at least one button",
                 serde_json::to_value(self.scenario).unwrap_or_default()
             );
+        }
+        if let Some(p) = &self.progress {
+            ensure!(
+                self.mode == Mode::Toast,
+                "progress: only toasts have a progress bar"
+            );
+            p.value.check().context("progress")?;
         }
         if self.on_click == Some(OnClick::Details) {
             ensure!(self.details.is_some(), "on_click \"details\" needs details");
@@ -646,6 +751,50 @@ mod tests {
         );
         let dialog = spec(r#"{"title": "x", "mode": "dialog", "expires": "14d"}"#);
         assert_eq!(dialog.lifetime().unwrap(), Duration::from_secs(14 * 86400));
+    }
+
+    #[test]
+    fn progress_values() {
+        let p = |s: &str| ProgressValue::parse(s);
+        assert_eq!(p("0.4").unwrap(), ProgressValue::Fraction(0.4));
+        assert_eq!(p("40%").unwrap(), ProgressValue::Fraction(0.4));
+        assert_eq!(p(" 100 % ").unwrap(), ProgressValue::Fraction(1.0));
+        assert_eq!(
+            p("Indeterminate").unwrap(),
+            ProgressValue::Indeterminate(Indeterminate::Indeterminate)
+        );
+        for bad in ["1.5", "-0.1", "150%", "NaN", "half", ""] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
+        let spec = |json: &str| Spec::parse(json).and_then(|s| s.validate().map(|()| s));
+        spec(r#"{"title": "t", "progress": {"value": 0.5}}"#).unwrap();
+        spec(r#"{"title": "t", "progress": {"value": "indeterminate", "status": "s"}}"#).unwrap();
+        assert!(spec(r#"{"title": "t", "progress": {"value": 2}}"#).is_err());
+        assert!(spec(r#"{"title": "t", "progress": {"value": "soon"}}"#).is_err());
+        assert!(spec(r#"{"title": "t", "progress": {"value": 0.5, "colour": "red"}}"#).is_err());
+        assert!(spec(r#"{"title": "t", "mode": "dialog", "progress": {"value": 0.5}}"#).is_err());
+        assert_eq!(
+            spec(r#"{"title": "t", "duration": "long"}"#)
+                .unwrap()
+                .duration,
+            ToastDuration::Long
+        );
+        assert!(spec(r#"{"title": "t", "duration": "forever"}"#).is_err());
+
+        // the flags: --progress makes a bar or moves the spec's one; --progress-status words it
+        let mut s =
+            spec(r#"{"title": "t", "progress": {"value": 0.1, "title": "a.txt"}}"#).unwrap();
+        s.apply(&QuickFlags {
+            progress: Some(ProgressValue::Fraction(0.9)),
+            progress_status: Some("Almost".into()),
+            duration: Some(ToastDuration::Long),
+            ..Default::default()
+        });
+        let bar = s.progress.unwrap();
+        assert_eq!(bar.value, ProgressValue::Fraction(0.9));
+        assert_eq!(bar.status.as_deref(), Some("Almost"));
+        assert_eq!(bar.title.as_deref(), Some("a.txt"));
+        assert_eq!(s.duration, ToastDuration::Long);
     }
 
     #[test]

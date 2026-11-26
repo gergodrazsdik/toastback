@@ -239,6 +239,25 @@ impl Store {
         Ok(Claim::Claimed)
     }
 
+    /// Record a toast's new progress (after `toastback update`), unless it has been answered or
+    /// shown again since.
+    pub fn set_progress(
+        &self,
+        id: &str,
+        token: &str,
+        progress: &crate::spec::Progress,
+    ) -> Result<()> {
+        let _lock = self.lock_pending()?;
+        if let Some(mut p) = self.load_pending(id)?
+            && token_matches(&p.token, token)
+            && !p.done
+        {
+            p.spec.progress = Some(progress.clone());
+            self.write_pending(&p)?;
+        }
+        Ok(())
+    }
+
     /// Record that a dialog for the notification shown with `token` opened before it expired.
     pub fn set_dialog_open(&self, id: &str, token: &str, now: u64) -> Result<()> {
         let _lock = self.lock_pending()?;

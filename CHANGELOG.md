@@ -12,10 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--wait [--timeout DURATION]` and `toastback wait ID`: wait until a notification is answered and print the answer
   (the button id, or `__body`). Exit 0 answered, 5 closed without a choice (dismissed, dialog closed, removed), 6
   timed out, 130 Ctrl-C (in WSL the shell reports 1, WSL's code for it). Without `--wait`, nothing changes.
+- Progress bars: `progress` in the spec (`value` 0–1 or `"indeterminate"`, `status`, `title`, `label`), or
+  `--progress` and `--progress-status`. `toastback update ID` moves the bar in place, without a new banner. Built-in
+  example `progress`.
+- `duration` in the spec and `--duration`: `long` keeps the banner on screen for about 25 seconds.
 - `toastback notify-send`: libnotify's `notify-send` command line, shown as a toast. It handles the summary and body
   (escapes, markup), `-u`, `-i`, `-n`, `-a`, `-e`, `-p`, `-r`, `-w`, `-A` (buttons; the chosen action is printed),
   `-t` as the wait limit, `--id-fd`, `--selected-action-fd`, the hints `urgency`, `image-path`, `suppress-sound`,
-  `transient` and the stack tags, and `-v`.
+  `transient`, `value` (a progress bar, moved in place for the same stack tag) and the stack tags, `-t 0` or over 10 s as a long banner, and `-v`.
 - `install` writes a `~/.local/bin/notify-send` wrapper next to the shim, so scripts that call `notify-send` show
   Windows toasts unchanged. It leaves a `notify-send` that isn't toastback's alone. `install --no-notify-send` removes
   it and keeps it off; `install --notify-send` brings it back. `uninstall` removes it, and `doctor` checks it.

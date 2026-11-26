@@ -65,6 +65,7 @@ mod show;
 mod spec;
 mod store;
 mod toast;
+mod update;
 mod wait;
 
 use std::process::ExitCode;

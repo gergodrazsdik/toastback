@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Toast XML (escaped, testable on the host) and showing/removing toasts (Windows).
 
-use crate::spec::{BODY_ACTION, Scenario, Sound, Spec, Style};
+use crate::spec::{BODY_ACTION, Progress, Scenario, Sound, Spec, Style, ToastDuration};
 
 pub const AUMID: &str = "Toastback";
 pub const GROUP: &str = "toastback";
@@ -61,6 +61,9 @@ pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String 
     if let Some(s) = scenario {
         x += &format!(r#" scenario="{s}""#);
     }
+    if spec.duration == ToastDuration::Long {
+        x += r#" duration="long""#;
+    }
     if spec.buttons.iter().any(|b| b.style.is_some()) {
         x += r#" useButtonStyle="true""#;
     }
@@ -80,6 +83,17 @@ pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String 
     }
     if let Some(a) = &spec.attribution {
         x += &format!(r#"<text placement="attribution">{}</text>"#, escape(a));
+    }
+    if let Some(p) = &spec.progress {
+        // bound to the toast's data, so `toastback update` can change it in place
+        x += r#"<progress value="{progressValue}" status="{progressStatus}""#;
+        if p.title.is_some() {
+            x += r#" title="{progressTitle}""#;
+        }
+        if p.label.is_some() {
+            x += r#" valueStringOverride="{progressValueString}""#;
+        }
+        x += "/>";
     }
     x += "</binding></visual>";
 
@@ -113,6 +127,21 @@ pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String 
     x
 }
 
+/// The data a progress bar is bound to: Windows needs `progressStatus`, so it's always there.
+pub fn progress_data(p: &Progress) -> Vec<(&'static str, String)> {
+    let mut data = vec![
+        ("progressValue", p.value.to_xml_value()),
+        ("progressStatus", p.status.clone().unwrap_or_default()),
+    ];
+    if let Some(t) = &p.title {
+        data.push(("progressTitle", t.clone()));
+    }
+    if let Some(l) = &p.label {
+        data.push(("progressValueString", l.clone()));
+    }
+    data
+}
+
 #[cfg(windows)]
 pub use imp::*;
 
@@ -122,7 +151,8 @@ mod imp {
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::Foundation::{DateTime, IReference, PropertyValue};
     use windows::UI::Notifications::{
-        NotificationSetting, ToastNotification, ToastNotificationManager,
+        NotificationData, NotificationSetting, NotificationUpdateResult, ToastNotification,
+        ToastNotificationManager,
     };
     use windows::core::{HSTRING, Interface as _};
 
@@ -131,7 +161,19 @@ mod imp {
     /// Seconds between 1601-01-01 (Windows epoch) and 1970-01-01.
     const EPOCH_DIFF: i64 = 11_644_473_600;
 
-    pub fn show(xml: &str, id: &str, expires_at_unix: u64) -> Result<()> {
+    /// The toast's bound values (its progress bar), as Windows keeps them for updates.
+    fn notification_data(data: &[(&str, String)]) -> Result<NotificationData> {
+        let d = NotificationData::new()?;
+        let values = d.Values()?;
+        for (k, v) in data {
+            values.Insert(&HSTRING::from(*k), &HSTRING::from(v.as_str()))?;
+        }
+        // 0: always apply, whatever came before
+        d.SetSequenceNumber(0)?;
+        Ok(d)
+    }
+
+    pub fn show(xml: &str, id: &str, expires_at_unix: u64, data: &[(&str, String)]) -> Result<()> {
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(xml))
             .context("toast XML rejected")?;
@@ -144,10 +186,26 @@ mod imp {
         })?
         .cast()?;
         toast.SetExpirationTime(&expiry)?;
+        if !data.is_empty() {
+            toast.SetData(&notification_data(data)?)?;
+        }
         ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?
             .Show(&toast)
             .context("ToastNotifier.Show")?;
         Ok(())
+    }
+
+    /// Change a shown toast's bound values in place: no new banner, no sound. `Ok(false)`: it's no
+    /// longer in the notification center.
+    pub fn update(id: &str, data: &[(&str, String)]) -> Result<bool> {
+        let result = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?
+            .UpdateWithTagAndGroup(
+                &notification_data(data)?,
+                &HSTRING::from(tag(id)),
+                &HSTRING::from(GROUP),
+            )
+            .context("ToastNotifier.Update")?;
+        Ok(result == NotificationUpdateResult::Succeeded)
     }
 
     /// Is the toast still on screen or in the notification center? One the user dismissed isn't,
@@ -258,6 +316,45 @@ mod tests {
         assert!(x.contains(r#"arguments="toastback://act?id=id1&amp;a=later&amp;t=tok""#));
         assert!(x.contains(r#"<image placement="appLogoOverride" src="C:\c\id1-icon.png"/>"#));
         assert!(x.ends_with(r#"<audio silent="true"/></toast>"#));
+    }
+
+    #[test]
+    fn progress_bar_and_long_duration() {
+        let s = Spec::parse(
+            r#"{"title": "t", "duration": "long",
+                "progress": {"value": 0.25, "status": "Copying", "label": "1 of 4"}}"#,
+        )
+        .unwrap();
+        let x = build_xml(&s, "id1", "tok", &Images::default());
+        assert!(x.contains(r#" duration="long""#), "{x}");
+        // bound to the data, so it can be updated; no title binding, none was given
+        assert!(x.contains(
+            r#"<progress value="{progressValue}" status="{progressStatus}" valueStringOverride="{progressValueString}"/>"#
+        ), "{x}");
+        assert_eq!(
+            progress_data(s.progress.as_ref().unwrap()),
+            [
+                ("progressValue", "0.25".to_string()),
+                ("progressStatus", "Copying".to_string()),
+                ("progressValueString", "1 of 4".to_string()),
+            ]
+        );
+        // a short toast says nothing about its duration
+        let plain = build_xml(
+            &Spec::parse(r#"{"title": "t"}"#).unwrap(),
+            "id1",
+            "tok",
+            &Images::default(),
+        );
+        assert!(!plain.contains("duration") && !plain.contains("<progress"));
+        let s = Spec::parse(r#"{"title": "t", "progress": {"value": "indeterminate"}}"#).unwrap();
+        assert_eq!(
+            progress_data(s.progress.as_ref().unwrap()),
+            [
+                ("progressValue", "indeterminate".to_string()),
+                ("progressStatus", String::new()),
+            ]
+        );
     }
 
     #[test]
