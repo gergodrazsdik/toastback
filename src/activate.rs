@@ -182,16 +182,28 @@ mod imp {
         // a log write that fails must not cost the click
         let _ = store.log("activated", json!({ "id": act.id, "action": act.action }));
 
-        let (action, from_dialog) = if act.action == BODY_ACTION {
+        // what runs, and what `toastback wait` reports: a body click is an answer even when
+        // nothing runs for it; a details dialog's answer is the choice made in it
+        let body = Some(BODY_ACTION.to_string());
+        let (action, answer, from_dialog) = if act.action == BODY_ACTION {
             match pending.spec.body_click() {
-                OnClick::Default => (Some(BODY_ACTION.to_string()), false),
-                OnClick::Details => (ask(store, &pending)?, true),
-                OnClick::None => (None, false),
+                OnClick::Default => (body.clone(), body, false),
+                OnClick::Details => {
+                    let choice = ask(store, &pending)?;
+                    (choice.clone(), choice, true)
+                }
+                OnClick::None => (None, body, false),
             }
         } else {
-            (Some(act.action), false)
+            (Some(act.action.clone()), Some(act.action), false)
         };
-        finish(store, &pending, action.as_deref(), from_dialog)
+        finish(
+            store,
+            &pending,
+            action.as_deref(),
+            answer.as_deref(),
+            from_dialog,
+        )
     }
 
     /// `__dialog <id>`: the detached process behind `mode: dialog`.
@@ -206,7 +218,7 @@ mod imp {
             return store.log("rejected", json!({ "id": id, "reason": "already handled" }));
         }
         let action = ask(store, &pending)?;
-        finish(store, &pending, action.as_deref(), true)
+        finish(store, &pending, action.as_deref(), action.as_deref(), true)
     }
 
     /// Show the dialog for a notification; returns the chosen button id.
@@ -225,18 +237,20 @@ mod imp {
         Ok(choice)
     }
 
-    /// Claim the click, clear the toast, then run the callback for `action` (if any).
-    /// `from_dialog`: the choice was made in a dialog (which may count past `expires`).
+    /// Claim the click (recording `answer` for `toastback wait`), clear the toast, then run the
+    /// callback for `action` (if any). `from_dialog`: the choice was made in a dialog (which may
+    /// count past `expires`).
     fn finish(
         store: &Store,
         pending: &Pending,
         action: Option<&str>,
+        answer: Option<&str>,
         from_dialog: bool,
     ) -> Result<()> {
         let id = pending.spec.id.clone().unwrap_or_default();
         // A dialog can stay open for long, and another click may be running already: only the
         // first claim for this token runs anything. Claiming marks it done before the callback.
-        let reason = match store.claim(&id, &pending.token, unix_now(), from_dialog)? {
+        let reason = match store.claim(&id, &pending.token, unix_now(), from_dialog, answer)? {
             Claim::Claimed => None,
             Claim::Gone => Some("removed or expired"),
             Claim::Expired => Some("expired"),

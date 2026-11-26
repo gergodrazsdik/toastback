@@ -21,13 +21,14 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0008](0008-commands-and-click-feedback.md) | Commands and click feedback: `validate`, `remove`, `clear`, `doctor`, `notify_on_success` | accepted |
 | [0009](0009-installer-and-line-endings.md) | Installer and line endings: a script that survives a pipe, LF everywhere | accepted |
 | [0010](0010-no-code-signing.md) | No code signing | accepted |
-| [0011](0011-shim-without-distro-name.md) | Shim v2: the distro from `wslpath` when `WSL_DISTRO_NAME` is missing | accepted, amended by 0014 |
+| [0011](0011-shim-without-distro-name.md) | Shim v2: the distro from `wslpath` when `WSL_DISTRO_NAME` is missing | accepted, amended by 0014, 0018 |
 | [0012](0012-repository-and-release.md) | Repository settings, release flow, changelog and versions | accepted, amended by 0016 |
 | [0013](0013-winget.md) | winget: the release zip with a nested installer | accepted |
 | [0014](0014-posix-sh.md) | No bash needed in WSL | accepted |
 | [0015](0015-pinned-ci.md) | Pinned CI: actions by commit SHA, linters by version and digest, a 7-day cooldown | accepted |
 | [0016](0016-settings-as-code.md) | Repository settings as code | accepted |
-| [0017](0017-notify-send.md) | notify-send: a subcommand, a wrapper installed by default, and an opt-in wait | accepted |
+| [0017](0017-notify-send.md) | notify-send: a subcommand, a wrapper installed by default, and an opt-in wait | accepted, amended by 0018 |
+| [0018](0018-wait.md) | Waiting for an answer: `--wait`, `wait ID`, and notify-send's `-w` and `-A` | accepted |
 
 ## Numbering and status
 

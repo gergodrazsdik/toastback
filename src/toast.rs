@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Toast XML (escaped, testable on the host) and showing/removing toasts (Windows).
 
-use crate::spec::{BODY_ACTION, OnClick, Scenario, Sound, Spec, Style};
+use crate::spec::{BODY_ACTION, Scenario, Sound, Spec, Style};
 
 pub const AUMID: &str = "Toastback";
 pub const GROUP: &str = "toastback";
@@ -45,11 +45,13 @@ pub fn tag(id: &str) -> String {
 
 /// Build the toast XML. Every piece of user text goes through [`escape`].
 pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String {
-    let mut x = String::from("<toast");
-    if spec.body_click() != OnClick::None {
-        let uri = activation_uri(id, BODY_ACTION, token);
-        x += &format!(r#" launch="{}" activationType="protocol""#, escape(&uri));
-    }
+    // Every click reaches toastback, also one with nothing to run: it records the answer for
+    // `toastback wait` (ADR 0018). The handler then runs nothing.
+    let uri = activation_uri(id, BODY_ACTION, token);
+    let mut x = format!(
+        r#"<toast launch="{}" activationType="protocol""#,
+        escape(&uri)
+    );
     let scenario = match spec.scenario {
         Scenario::Default => None,
         Scenario::Reminder => Some("reminder"),
@@ -90,17 +92,10 @@ pub fn build_xml(spec: &Spec, id: &str, token: &str, images: &Images) -> String 
                 Some(Style::Critical) => r#" hint-buttonStyle="Critical""#,
                 None => "",
             };
-            if spec.run_for(&b.id).is_some() {
-                let uri = escape(&activation_uri(id, &b.id, token));
-                x += &format!(
-                    r#"<action content="{label}" activationType="protocol" arguments="{uri}"{style}/>"#
-                );
-            } else {
-                // nothing to run: let Windows just dismiss the toast, no process is started
-                x += &format!(
-                    r#"<action content="{label}" activationType="system" arguments="dismiss"{style}/>"#
-                );
-            }
+            let uri = escape(&activation_uri(id, &b.id, token));
+            x += &format!(
+                r#"<action content="{label}" activationType="protocol" arguments="{uri}"{style}/>"#
+            );
         }
         x += "</actions>";
     }
@@ -153,6 +148,21 @@ mod imp {
             .Show(&toast)
             .context("ToastNotifier.Show")?;
         Ok(())
+    }
+
+    /// Is the toast still on screen or in the notification center? One the user dismissed isn't,
+    /// and neither is one that was clicked (Windows removes it before the click is handled).
+    pub fn in_center(id: &str) -> Result<bool> {
+        let history =
+            ToastNotificationManager::History()?.GetHistoryWithId(&HSTRING::from(AUMID))?;
+        let (want, group) = (HSTRING::from(tag(id)), HSTRING::from(GROUP));
+        for i in 0..history.Size()? {
+            let t = history.GetAt(i)?;
+            if t.Tag()? == want && t.Group()? == group {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Remove one toast from Action Center. Missing toasts are fine.
@@ -209,12 +219,12 @@ mod tests {
     }
 
     #[test]
-    fn simple_toast_has_no_launch_or_actions() {
+    fn simple_toast_reports_its_click() {
         let s = Spec::parse(r#"{"title": "Backup <done>", "body": "42 GB & more"}"#).unwrap();
         let x = build_xml(&s, "id1", "tok", &Images::default());
         assert_eq!(
             x,
-            r#"<toast><visual><binding template="ToastGeneric"><text>Backup &lt;done&gt;</text><text>42 GB &amp; more</text></binding></visual></toast>"#
+            r#"<toast launch="toastback://act?id=id1&amp;a=__body&amp;t=tok" activationType="protocol"><visual><binding template="ToastGeneric"><text>Backup &lt;done&gt;</text><text>42 GB &amp; more</text></binding></visual></toast>"#
         );
     }
 
@@ -251,11 +261,12 @@ mod tests {
     }
 
     #[test]
-    fn button_without_any_run_dismisses() {
+    fn button_without_any_run_still_reports_its_click() {
         let s = Spec::parse(r#"{"title": "t", "buttons": [{"id": "ok", "label": "OK"}]}"#).unwrap();
         let x = build_xml(&s, "id1", "tok", &Images::default());
-        assert!(
-            x.contains(r#"<action content="OK" activationType="system" arguments="dismiss"/>"#)
-        );
+        assert!(x.contains(
+            r#"<action content="OK" activationType="protocol" arguments="toastback://act?id=id1&amp;a=ok&amp;t=tok"/>"#
+        ));
+        assert!(!x.contains("system"));
     }
 }

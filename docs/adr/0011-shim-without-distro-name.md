@@ -1,6 +1,7 @@
 # 0011: Shim v2: the distro from `wslpath` when `WSL_DISTRO_NAME` is missing
 
-- Status: accepted, amended by [0014](0014-posix-sh.md) (the shim runs in `sh`)
+- Status: accepted, amended by [0014](0014-posix-sh.md) (the shim runs in `sh`) and [0018](0018-wait.md) (shim v4:
+  the caller's process id)
 - Date: 2026-10-14
 
 ## Context and problem statement

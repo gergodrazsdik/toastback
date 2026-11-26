@@ -1029,8 +1029,67 @@ mod tests {
         assert!(w.starts_with("#!/bin/sh\n"));
         assert!(w.lines().nth(1).unwrap().starts_with(NOTIFY_SEND_MARKER));
         assert!(w.contains("toastback 1.5.0"));
-        assert!(w.ends_with("exec \"$HOME/.local/bin/toastback\" notify-send \"$@\"\n"));
+        assert!(w.contains("exec \"$tb\" notify-send \"$@\""));
+        assert!(w.contains(crate::notify_send::RECORDS_FLAG));
         assert!(!w.contains('\r') && !w.contains("TOASTBACK_EOF"));
+    }
+
+    /// The wrapper in a real `sh`, with a stand-in for the shim that prints what it got.
+    #[cfg(unix)]
+    #[test]
+    fn notify_send_wrapper_delivers_records() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let home = std::env::temp_dir().join(format!("toastback-nsw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // the stand-in: echo the arguments; in records mode, print records and exit 7
+        let fake = bin.join("toastback");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\" >&2\n\
+             [ \"$2\" = --toastback-records ] || { echo plain; exit 0; }\n\
+             echo 'out 42'; echo 'fd 3 42'; echo 'fd 4 yes please'; echo 'fd x bad'; echo 'out yes'; exit 7\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wrapper = bin.join("notify-send");
+        std::fs::write(&wrapper, render_notify_send("1.5.0")).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = |args: &[&str]| {
+            let script = format!("\"$0\" \"$@\" 3>{h}/fd3 4>{h}/fd4", h = home.display());
+            Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .arg(&wrapper)
+                .args(args)
+                .env("HOME", &home)
+                .output()
+                .unwrap()
+        };
+        // no descriptor options: straight through
+        let out = run(&["-p", "T"]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "plain\n");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("args:notify-send -p T"));
+        assert!(out.status.success());
+        // with them: records to stdout and the descriptors, the exe's exit code kept
+        let out = run(&[
+            "-p",
+            "--id-fd=3",
+            "--selected-action-fd",
+            "4",
+            "-A",
+            "yes=Yes",
+            "Q",
+        ]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\nyes\n");
+        assert_eq!(out.status.code(), Some(7));
+        let read = |n: &str| std::fs::read_to_string(home.join(n)).unwrap();
+        assert_eq!(read("fd3"), "42\n");
+        assert_eq!(read("fd4"), "yes please\n");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
@@ -1146,6 +1205,7 @@ mod tests {
         // systemd services and the like have no WSL_DISTRO_NAME: the shim falls back to wslpath
         assert!(s.contains(r#"distro="${WSL_DISTRO_NAME:-}""#));
         assert!(s.contains("wslpath -w /"));
+        assert!(s.contains(r#"--caller-pid "$$" "$@""#));
         assert!(s.contains(
             r"TOASTBACK_WIN_EXE='C:\Users\o'\''neil\AppData\Local\toastback\bin\toastback.exe'"
         ));
