@@ -166,8 +166,9 @@ covered by the smoke job, so here they only need to be checked once.
 52. In an interactive WSL terminal, `toastback --wait -t Ctrl-C` then Ctrl-C: the prompt returns with exit 1 (WSL's
     code for a Ctrl-C), `toastback log` shows `wait_interrupted`, and within about a second
     `tasklist.exe | grep toastback` finds no `--wait` process (`__dialog` processes running a callback are fine). The
-    toast stays. The same with `x=$(toastback --wait -t Ctrl-C)`. In PowerShell, `toastback-cli --wait -t Ctrl-C`
-    then Ctrl-C: exit 130.
+    toast stays. The same with `x=$(toastback --wait -t Ctrl-C)`, where the status is the shell's own for an aborted
+    command line (zsh: 2, as with `x=$(sleep 10)`). In PowerShell, `toastback-cli --wait -t Ctrl-C` then Ctrl-C:
+    exit 130.
 53. `id=$(toastback -t "Later")`, click it, then `toastback wait "$id"` prints `__body` at once.
     `toastback wait nope` exits 2. `toastback --wait --timeout 5s -t x` exits 6 after 5 seconds.
 54. Through the wrapper: `notify-send -p --id-fd=3 --selected-action-fd=4 -A ok=OK Q 3>/tmp/id 4>/tmp/act`, click
