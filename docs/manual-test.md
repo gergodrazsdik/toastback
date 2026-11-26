@@ -190,6 +190,13 @@ covered by the smoke job, so here they only need to be checked once.
     `Volume muted` as the body instead, a new toast replaces it. `notify-send -t 0 Long` keeps its banner about 25 seconds, `notify-send -t 3000 Short`
     for Windows' usual time.
 
+## Scoop
+
+58. `just scoop-test` passes: install through Scoop, `doctor`, an update that keeps the probe toast, uninstall,
+    nothing left behind. After a release, with the bucket: `scoop bucket add gergodrazsdik
+    https://github.com/gergodrazsdik/scoop-bucket`, `scoop install gergodrazsdik/toastback`, `toastback-cli doctor`,
+    then `scoop uninstall toastback`.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

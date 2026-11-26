@@ -41,6 +41,7 @@ you use. Pick the method that matches how you work:
 | Method | Best for | Shim goes to | Added to the Windows PATH |
 |---|---|---|---|
 | [winget](#winget) | Windows and WSL, with upgrades through winget | the default distro | yes |
+| [Scoop](#scoop) | Windows and WSL, with upgrades through Scoop | the default distro | yes, as Scoop's `toastback-cli` |
 | [`install.sh`](#from-wsl-installsh) | working mainly in one distro | that distro, for your user | with `--add-to-path` |
 | [Zip](#zip) | no winget, or a specific version on Windows | the default distro | with `--add-to-path` |
 | [From source](#from-source) | developing toastback | that distro, for your user | yes |
@@ -59,6 +60,17 @@ winget install GergoDrazsdik.Toastback
 Then open a new terminal, so that it sees the new PATH. Upgrade with `winget upgrade GergoDrazsdik.Toastback`, which
 refreshes the shims you already have, and remove it with `winget uninstall GergoDrazsdik.Toastback`. winget's
 install shows no test notification; try `toastback-cli -t hello` instead.
+
+### Scoop
+
+```powershell
+scoop bucket add gergodrazsdik https://github.com/gergodrazsdik/scoop-bucket
+scoop install gergodrazsdik/toastback
+```
+
+Scoop puts `toastback-cli` on your PATH. Upgrade with `scoop update toastback`, which refreshes the shims you already
+have, and remove it with `scoop uninstall toastback` (`--purge` also deletes logs and pending notifications). Use
+either Scoop or winget, not both: they'd manage the same installation.
 
 ### From WSL: `install.sh`
 
@@ -457,6 +469,8 @@ Built in WSL for `x86_64-pc-windows-msvc` with cargo-xwin; the prerequisites are
 | `just winget-setup` / `just winget-test` | winget: check the tools / install this build through winget, check it and uninstall it |
 | `just winget-manifest X.Y.Z` / `just winget-test-release X.Y.Z` | winget: validate a release's manifest / run the same test with it |
 | `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | winget: open the first winget-pkgs PR / the PR for a later version |
+| `just scoop-setup` / `just scoop-test` | Scoop: check it works from WSL / install this build through Scoop, update it and uninstall it |
+| `just scoop-manifest X.Y.Z` | Scoop: render a release's manifest for the bucket and check it against Scoop's schema |
 
 Design notes and decisions are in [docs/adr/](docs/adr/README.md); the manual test checklist is
 [docs/manual-test.md](docs/manual-test.md).

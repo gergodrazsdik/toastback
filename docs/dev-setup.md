@@ -38,7 +38,8 @@ missing, with a message; CI runs them all, at the versions pinned in `.github/wo
 `scripts/install-ci-tools.sh`.
 
 Recommended: the [GitHub CLI](https://cli.github.com/) (`gh`) and [Claude Code](https://code.claude.com/docs/en/setup).
-The winget recipes also need the Windows `winget` and `wingetcreate` (`just winget-setup` checks them).
+The winget recipes also need the Windows `winget` and `wingetcreate` (`just winget-setup` checks them), and the Scoop
+recipes need [Scoop](https://scoop.sh) on Windows (`just scoop-setup` checks it).
 
 ## First steps
 

@@ -14,7 +14,7 @@ Claude Code also loads `AGENTS.md` on its own).
   - GitHub: `gh` (pull requests with `gh pr create --body-file <file>`, `gh pr edit --body-file <file>`), `gh stack`,
     and `just github-settings` / `just github-settings-check`;
   - anything that starts a Windows exe: `just test`, `just run`, `just install`, `just uninstall`, `just demo`,
-    `just log`, `just doctor`, the `just winget-*` recipes, `toastback`, and the built exes under `target/`.
+    `just log`, `just doctor`, the `just winget-*` and `just scoop-*` recipes, `toastback`, and the built exes under `target/`.
 
   A call only runs outside when the whole command matches: no `cd … &&`, pipes, heredocs, `$(...)` or redirections
   around it. Project settings can't add sandbox exclusions; they live in each user's own settings.

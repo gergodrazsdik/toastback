@@ -299,3 +299,19 @@ github-settings repo *flags:
 [group('maintainer')]
 github-settings-check repo:
     scripts/github-settings.sh --check {{ repo }}
+
+# Check that scoop works from WSL
+[group('scoop')]
+scoop-setup:
+    scripts/scoop.sh setup
+
+# Render the manifest of a published release for the bucket (dist/scoop/toastback.json), check it against Scoop's schema
+[group('scoop')]
+scoop-manifest version:
+    scripts/scoop.sh manifest {{ version }}
+
+# Install this build through scoop from a local manifest, update it, uninstall it, then reinstall for this distro
+[group('scoop')]
+[confirm('This uninstalls toastback on this machine, tests scoop, then runs `just install`. Continue? [y/N]')]
+scoop-test: build
+    status=0; scripts/scoop.sh test-local || status=$?; just install; exit "$status"
