@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-26
+
 ### Added
 
 - Scoop: `scoop bucket add gergodrazsdik https://github.com/gergodrazsdik/scoop-bucket`, then
@@ -235,7 +237,8 @@ First public release. (A v0.1.0 test release was published and withdrawn; its `i
 - Clicks are accepted only with the notification's random 128-bit token; commands never come from the activation
   URI, and notification data reaches callbacks as environment variables, never pasted into a command line.
 
-[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.4.0...HEAD
+[unreleased]: https://github.com/gergodrazsdik/toastback/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/gergodrazsdik/toastback/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/gergodrazsdik/toastback/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/gergodrazsdik/toastback/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/gergodrazsdik/toastback/compare/v1.1.0...v1.2.0
