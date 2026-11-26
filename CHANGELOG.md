@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--wait [--timeout DURATION]` and `toastback wait ID`: wait until a notification is answered and print the answer
   (the button id, or `__body`). Exit 0 answered, 5 closed without a choice (dismissed, dialog closed, removed), 6
-  timed out, 130 Ctrl-C. Without `--wait`, nothing changes.
+  timed out, 130 Ctrl-C (in WSL the shell reports 1, WSL's code for it). Without `--wait`, nothing changes.
 - `toastback notify-send`: libnotify's `notify-send` command line, shown as a toast. It handles the summary and body
   (escapes, markup), `-u`, `-i`, `-n`, `-a`, `-e`, `-p`, `-r`, `-w`, `-A` (buttons; the chosen action is printed),
   `-t` as the wait limit, `--id-fd`, `--selected-action-fd`, the hints `urgency`, `image-path`, `suppress-sound`,

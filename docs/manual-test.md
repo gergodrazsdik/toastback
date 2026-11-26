@@ -163,9 +163,11 @@ covered by the smoke job, so here they only need to be checked once.
     details dialog, and the button chosen there is printed. Let the banner time out, then click the button in the
     notification center: still printed. Dismissing the toast (its X, or "clear" in the notification center) exits 5
     within about 6 seconds.
-52. In an interactive WSL terminal, `toastback --wait -t Ctrl-C` then Ctrl-C: the prompt returns with exit 130, and
-    within about a second `tasklist.exe | grep toastback` finds no waiting process. The toast stays. The same with
-    `x=$(toastback --wait -t Ctrl-C)`. In PowerShell, `toastback-cli --wait -t Ctrl-C` then Ctrl-C: exit 130.
+52. In an interactive WSL terminal, `toastback --wait -t Ctrl-C` then Ctrl-C: the prompt returns with exit 1 (WSL's
+    code for a Ctrl-C), `toastback log` shows `wait_interrupted`, and within about a second
+    `tasklist.exe | grep toastback` finds no `--wait` process (`__dialog` processes running a callback are fine). The
+    toast stays. The same with `x=$(toastback --wait -t Ctrl-C)`. In PowerShell, `toastback-cli --wait -t Ctrl-C`
+    then Ctrl-C: exit 130.
 53. `id=$(toastback -t "Later")`, click it, then `toastback wait "$id"` prints `__body` at once.
     `toastback wait nope` exits 2. `toastback --wait --timeout 5s -t x` exits 6 after 5 seconds.
 54. Through the wrapper: `notify-send -p --id-fd=3 --selected-action-fd=4 -A ok=OK Q 3>/tmp/id 4>/tmp/act`, click

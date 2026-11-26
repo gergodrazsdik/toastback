@@ -183,7 +183,7 @@ answered before `wait` started. `DURATION` is like `expires`: `90s`, `5m`, `1h30
 | 2 | `wait`: no notification with that id (or an invalid `--timeout`) |
 | 5 | closed without a choice: dismissed, a dialog closed, removed (`toastback remove`), shown again under its id |
 | 6 | timed out: `--timeout` passed, or the notification expired |
-| 130 | Ctrl-C; the toast stays and its buttons still work |
+| 130 | Ctrl-C (from cmd or PowerShell; in WSL the shell reports 1, WSL's own code for a Ctrl-C). Either way the wait stops, and the toast stays with its buttons working |
 
 A toast whose banner times out moves to the notification center and can still be answered there; waiting goes on.
 
