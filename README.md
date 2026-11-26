@@ -222,7 +222,7 @@ that run `/usr/bin/notify-send` by its full path, and programs that send notific
 | notify-send | In toastback |
 |---|---|
 | `SUMMARY [BODY]` | title and body. The body's `\n` and other escapes are applied, its markup (`<b>`, `<i>`, `<a href>`, …) is removed and entities such as `&amp;` are decoded |
-| `-u low`, `normal`, `critical` | a silent toast; a toast; the `urgent` scenario with a **Dismiss** button |
+| `-u low`, `normal`, `critical` | a silent toast; a toast; the `urgent` scenario with a **Dismiss** button (Windows 11 asks once whether to allow [urgent toasts](#limitations)) |
 | `-i ICON`, `-n ICON`, hint `image-path` | a PNG or JPG path or `file://` URI, or `dialog-information`, `dialog-warning`, `dialog-error` and `dialog-question` as the built-in icons. Other icon names, and images that can't be read, are left out |
 | `-a APP_NAME` | the attribution line |
 | `-e`, hint `transient` | the toast leaves the notification center after about 10 seconds |
@@ -347,6 +347,9 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
   times out. Only clicks run callbacks.
 - **Focus assist / Do not disturb** hides toast banners (they still land in the notification center). Use
   `"mode": "dialog"` or `"scenario": "alarm"` for prompts that must be seen.
+- **Urgent toasts** (`"scenario": "urgent"`, `notify-send -u critical`): the first one makes Windows 11 ask whether
+  toastback may show important notifications. Your answer stays in toastback's notification settings, where you can
+  change it.
 - Buttons in the notification center appear once you expand the notification.
 - Toasts can't be shown from session 0 (services, scheduled tasks that run "whether user is logged on or not").
 - The first WSL callback after the distro has stopped takes a few seconds while WSL starts.

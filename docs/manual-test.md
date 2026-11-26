@@ -140,7 +140,8 @@ covered by the smoke job, so here they only need to be checked once.
 46. `notify-send -a CI -i dialog-warning "Disk almost full" "<b>93%</b> used\nClean up soon"` prints nothing, exits 0
     and shows a toast with the warning icon, "CI" as attribution and a two-line body without the `<b>` tags.
     `notify-send -u low Quiet` makes no sound. `notify-send -u critical "Disk full"` stays on screen with a
-    **Dismiss** button; on Windows 11 also with Do not disturb on. `notify-send -i firefox -n /no/such.png x` shows a
+    **Dismiss** button; on Windows 11 also with Do not disturb on. The first urgent toast makes Windows 11 ask
+    whether toastback may show important notifications; later ones don't ask again. `notify-send -i firefox -n /no/such.png x` shows a
     toast without an icon.
 47. `id=$(notify-send -p "Copying…")`, then `notify-send -r "$id" "Copy done"`: the second toast replaces the first.
     `notify-send -h string:x-dunst-stack-tag:vol "Volume 40%"`, then the same with `"Volume 50%"`: one toast is left.
