@@ -35,8 +35,10 @@ Chosen, with the maintainer's approval:
 - **`"duration": "short" | "long"` and `--duration`** (option 3): Windows' toast attribute. `short` follows the
   user's notification setting (5 s by default), `long` is about 25 seconds.
 - **notify-send**: `int:value:N` is a progress bar at N %, clamped to 0–100 as the daemons do. With a stack tag or
-  `-r`, each new value replaces the toast (a new banner, as the daemons show a new popup); in-place updates are for
-  `toastback update`. `-t 0` (libnotify's "never expires") and `-t` over 10 000 ms make a long banner.
+  `-r`, a new value for a toast that's still shown, with nothing else changed (title, body, icon, urgency, buttons),
+  updates its bar in place, as the daemons update an OSD. Anything else is shown anew. Replacing would be worse: in
+  manual testing, Windows closed the visible banner and filed the new toast in the notification center without a
+  popup. `-t 0` (libnotify's "never expires") and `-t` over 10 000 ms make a long banner.
 
 ### Consequences
 

@@ -742,6 +742,46 @@ fn tag_number(tag: &str) -> u32 {
     h % 0x7fff_ffff + 1
 }
 
+/// Does `new` differ from the shown `old` only in its progress bar's value? Then an update shows it.
+fn only_progress_changed(old: &Spec, new: &Spec) -> bool {
+    let shape = |s: &Spec| {
+        s.progress.as_ref().map(|p| Progress {
+            value: ProgressValue::Fraction(0.0),
+            ..p.clone()
+        })
+    };
+    let strip = |s: &Spec| Spec {
+        progress: None,
+        // where the caller ran doesn't show
+        context: Default::default(),
+        ..s.clone()
+    };
+    new.progress.is_some() && shape(old) == shape(new) && strip(old) == strip(new)
+}
+
+/// Update the toast `spec` would replace, if that's all it takes. `Some(id)`: done.
+#[cfg(windows)]
+fn update_in_place(store: &crate::store::Store, spec: &Spec) -> Option<String> {
+    use crate::spec::Mode;
+    use crate::toast;
+
+    let id = spec.id.clone()?;
+    let old = store.load_pending(&id).ok().flatten()?;
+    if old.done || old.spec.mode != Mode::Toast || !only_progress_changed(&old.spec, spec) {
+        return None;
+    }
+    let progress = spec.progress.as_ref()?;
+    if !toast::update(&id, &toast::progress_data(progress)).ok()? {
+        return None;
+    }
+    let _ = store.set_progress(&id, &old.token, progress);
+    let _ = store.log(
+        "updated",
+        serde_json::json!({ "id": id, "action": progress.value.to_xml_value() }),
+    );
+    Some(id)
+}
+
 /// Show what notify-send's command line asks for. Returns the exit code.
 #[cfg(windows)]
 pub fn run(
@@ -820,12 +860,17 @@ pub fn run(
             return EXIT_ERROR;
         }
     }
-    let id = match show::show_spec(store, spec) {
-        Ok(id) => id,
-        Err((_, e)) => {
-            errln!("Failed to show notification: {e:#}");
-            return EXIT_ERROR;
-        }
+    // a new value for a progress toast that's still shown: move its bar in place, as the daemons
+    // update an OSD; replacing it would close its banner without a new one (ADR 0019)
+    let id = match update_in_place(store, &spec) {
+        Some(id) => id,
+        None => match show::show_spec(store, spec) {
+            Ok(id) => id,
+            Err((_, e)) => {
+                errln!("Failed to show notification: {e:#}");
+                return EXIT_ERROR;
+            }
+        },
     };
     print(&number.to_string(), req.print_id, req.id_fd);
     if !req.wait {
@@ -1024,6 +1069,45 @@ mod tests {
         assert_eq!(duration(&["-t", "10001", "T"]), ToastDuration::Long);
         assert_eq!(duration(&["-t", "0", "T"]), ToastDuration::Long);
         assert_eq!(duration(&["-t", "-1", "T"]), ToastDuration::Short);
+    }
+
+    #[test]
+    fn only_a_new_value_updates_in_place() {
+        let spec = |args: &[&str]| req(args).spec;
+        let at40 = spec(&[
+            "-h",
+            "int:value:40",
+            "-h",
+            "string:synchronous:vol",
+            "Volume",
+        ]);
+        let at70 = spec(&[
+            "-h",
+            "int:value:70",
+            "-h",
+            "string:synchronous:vol",
+            "Volume",
+        ]);
+        assert!(only_progress_changed(&at40, &at70));
+        let mut elsewhere = at70.clone();
+        elsewhere.context.cwd = Some("/tmp".into());
+        assert!(only_progress_changed(&at40, &elsewhere));
+        // anything else that shows: a new toast
+        for other in [
+            spec(&["-h", "int:value:70", "Volume", "muted"]),
+            spec(&["-h", "int:value:70", "Brightness"]),
+            spec(&["-h", "int:value:70", "-u", "critical", "Volume"]),
+            // `run` picks the icon before comparing
+            Spec {
+                icon: Some("warning".into()),
+                ..at70.clone()
+            },
+            spec(&["Volume"]),
+        ] {
+            assert!(!only_progress_changed(&at40, &other), "{other:?}");
+        }
+        // a toast without a bar gets one by being shown again
+        assert!(!only_progress_changed(&spec(&["Volume"]), &at70));
     }
 
     #[test]

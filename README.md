@@ -276,7 +276,7 @@ that run `/usr/bin/notify-send` by its full path, and programs that send notific
 | `-p`, `-r ID` | print the notification's id (a number); replace the notification with that id |
 | hints `x-canonical-private-synchronous`, `x-dunst-stack-tag`, `synchronous` | a toast with the same tag replaces the previous one (volume and brightness scripts) |
 | hint `suppress-sound` | a silent toast |
-| hint `int:value:N` | a progress bar at N % (0 to 100); with a stack tag, each new value replaces the toast |
+| hint `int:value:N` | a progress bar at N % (0 to 100). With a stack tag or `-r`, a new value moves the shown toast's bar in place (volume and brightness scripts); a changed text or icon shows a new toast |
 | `-t 0`, `-t` over 10000 | a long banner (about 25 s) |
 | `-A [NAME=]Text` | a button (at most 5); implies `-w`. The chosen action's NAME is printed (an unnamed one's number, from 1). NAME `default` is a click on the toast's text |
 | `-w` | wait until the toast is clicked or dismissed; `-t MS` limits the wait ("Wait timeout expired") |

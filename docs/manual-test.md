@@ -185,8 +185,9 @@ covered by the smoke job, so here they only need to be checked once.
 56. `toastback update progress-demo --title x` works (the example has a title); on a toast shown with
     `toastback -t t --progress 0.1`, `--title x` exits 2. `toastback update progress-demo --progress 1` after
     dismissing the toast exits 5. `toastback --mode dialog -t t --progress 0.5` exits 2.
-57. `notify-send -h int:value:40 -h string:x-dunst-stack-tag:vol Volume`, then the same with `int:value:70`: one
-    toast, its bar at 70 %. `notify-send -t 0 Long` keeps its banner about 25 seconds, `notify-send -t 3000 Short`
+57. `notify-send -h int:value:40 -h string:x-dunst-stack-tag:vol Volume`, then the same with `int:value:70` while
+    the banner is still up: the banner stays and its bar moves to 70 % (`toastback log`: `updated`). With
+    `Volume muted` as the body instead, a new toast replaces it. `notify-send -t 0 Long` keeps its banner about 25 seconds, `notify-send -t 3000 Short`
     for Windows' usual time.
 
 ## Uninstall
