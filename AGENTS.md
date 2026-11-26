@@ -35,14 +35,15 @@ src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/to
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim template
 examples/            example specs; src/examples.rs registers them as built-in or repo-only
 scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, make-icon.sh, with-tool.sh,
-                     check-spdx.sh, install-ci-tools.sh, tool-updates.sh
+                     check-spdx.sh, install-ci-tools.sh, tool-updates.sh, github-settings.sh
 packaging/winget/    the winget manifest templates
 docs/plan.md         the original plan
 docs/adr/            architecture decision records
 docs/manual-test.md  the manual test checklist
 docs/dev-setup.md    prerequisites and local setup
 .claude/settings.json  committed Claude Code sandbox and deny rules
-.github/             workflows/ (ci.yml, lint.yml, release.yml), issue and PR templates, CODEOWNERS, dependabot.yml
+.github/             workflows/ (ci.yml, lint.yml, release.yml), rulesets/, issue and PR templates, CODEOWNERS,
+                     dependabot.yml
 ```
 
 Keep this tree current when you add top-level files or folders.
@@ -111,6 +112,7 @@ Use `just` (`just --list`):
 | `just demo` / `just log` / `just doctor` | Show every example / recent events / check the installation. |
 | `just winget-setup`, `winget-manifest X.Y.Z`, `winget-test`, `winget-test-release X.Y.Z` | winget packaging and its local tests ([ADR 0013](docs/adr/0013-winget.md)). |
 | `just winget-submit X.Y.Z` / `just winget-update X.Y.Z` | Maintainer only: public pull requests on `microsoft/winget-pkgs`. |
+| `just github-settings <repo>` / `just github-settings-check <repo>` | Maintainer only: apply the repository settings and rulesets ([ADR 0016](docs/adr/0016-settings-as-code.md)) / read them back and report differences. |
 | `just bump X.Y.Z` / `just release X.Y.Z` | Maintainer only: the release flow ([ADR 0012](docs/adr/0012-repository-and-release.md)). |
 
 Run `just check` and `just test` before every commit that changes code (`just lint` alone for docs). The hooks run

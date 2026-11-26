@@ -1,6 +1,6 @@
 # 0012: Repository settings, release flow, changelog and versions
 
-- Status: accepted
+- Status: accepted, amended by [0016](0016-settings-as-code.md) (settings as code, two more required checks)
 - Date: 2026-10-14
 
 ## Context and problem statement

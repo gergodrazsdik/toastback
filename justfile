@@ -289,3 +289,13 @@ release version:
     done
     [ -n "$run" ] || { echo "no release run for v$v yet: see https://github.com/gergodrazsdik/toastback/actions"; exit 1; }
     gh run watch "$run" --exit-status
+
+# Apply the repository settings and rulesets to <owner/repo> (--no-required-checks on a new repo)
+[group('maintainer')]
+github-settings repo *flags:
+    scripts/github-settings.sh {{ flags }} {{ repo }}
+
+# Read the repository settings of <owner/repo> back and report differences
+[group('maintainer')]
+github-settings-check repo:
+    scripts/github-settings.sh --check {{ repo }}
