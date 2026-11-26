@@ -404,7 +404,7 @@ it with `toastback examples NAME | toastback`. Callback output doesn't appear an
 - `uninstall` warns when a callback or dialog is still running from the install folder. Those files stay
   until it exits; the warning prints the command that removes the rest.
 - A click that seems to do nothing: check `toastback log`. A button with no `run` and no `default` only closes
-  the toast; this is by design.
+  the toast; this is by design. The click is still logged (`activated`), and `--wait` reports it.
 
 ## Development
 

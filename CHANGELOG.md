@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every click reaches toastback, also on a button or toast text with nothing to run, so it's logged and `--wait`
+  and `toastback wait` report it. Before, Windows closed such a toast without telling toastback.
 - The WSL shim (v4) passes its process id, so a wait stops when Ctrl-C ends the WSL side. `toastback install`
   writes it.
 
