@@ -1,0 +1,951 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! `toastback notify-send`: libnotify's `notify-send` command line, shown as a toast (ADR 0017).
+//!
+//! The parser follows GLib's option rules, like notify-send itself: options before or after the
+//! positionals, `--name=VALUE` or `--name VALUE`, `-tVALUE` or `-t VALUE`, clustered flags (`-pe`),
+//! `--` ends the options, and a value is taken even when it starts with `-`. Every error prints
+//! notify-send's message and exits 1. Output appears only with `-p` (the id), as in notify-send.
+
+use std::ffi::OsString;
+
+use crate::spec::{Button, Scenario, Sound, Spec, StockIcon};
+
+/// The libnotify version whose notify-send interface this follows, for `--version`.
+pub const LIBNOTIFY_VERSION: &str = "0.8.9";
+/// notify-send exits 1 on every error.
+pub const EXIT_ERROR: u8 = 1;
+/// Notification ids are `ns-<N>`; `N` is what `-p` prints and `-r` takes.
+const ID_PREFIX: &str = "ns-";
+/// `--transient`: how long the toast stays in the notification center.
+const TRANSIENT_EXPIRES: &str = "10s";
+
+const HELP: &str = "\
+Usage:
+  notify-send [OPTION…] <SUMMARY> [BODY] - create a notification
+
+toastback's notify-send: libnotify's command line, shown as a Windows toast.
+
+Options:
+  -?, --help                     Show this help
+  -u, --urgency=LEVEL            low (silent), normal or critical (urgent, with a Dismiss button)
+  -t, --expire-time=TIME         Accepted; Windows decides how long a toast stays on screen
+  -a, --app-name=APP_NAME        Shown as the toast's attribution line
+  -i, --icon=ICON                A PNG or JPG path or file:// URI, or dialog-information,
+                                 dialog-warning, dialog-error, dialog-question (other icon
+                                 names, and images that can't be read, are left out)
+  -n, --app-icon=ICON            The icon when there's no --icon
+  -c, --category=TYPE[,TYPE...]  Accepted and ignored
+  -e, --transient                Leave the notification center after about 10 seconds
+  -h, --hint=TYPE:NAME:VALUE     Extra data; types: boolean, int, double, string, byte, variant.
+                                 Used: urgency, image-path, suppress-sound, transient, and the
+                                 stack tags x-canonical-private-synchronous, x-dunst-stack-tag
+                                 and synchronous (same tag: the new toast replaces the old one)
+  -p, --print-id                 Print the notification ID
+  -r, --replace-id=REPLACE_ID    Replace the notification with this ID
+  -v, --version                  The libnotify version this follows, and toastback's
+  -w, -A, --wait, --action, --id-fd, --selected-action-fd, --activation-token-fd
+                                 Not supported yet: exit 1
+";
+
+#[derive(Debug, PartialEq)]
+pub enum Parsed {
+    Help,
+    Version,
+    Show(Box<Request>),
+}
+
+/// A notification to show: the spec (without id and icon), and what decides those.
+#[derive(Debug, PartialEq)]
+pub struct Request {
+    pub spec: Spec,
+    /// Icon candidates, best first: the first usable one becomes `icon`.
+    pub icons: Vec<String>,
+    /// From `-r` or a stack tag hint; `None`: a new number.
+    pub number: Option<u32>,
+    pub print_id: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Urgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Hint {
+    Str(String),
+    Int(i64),
+    Bool(bool),
+    /// `double` and `variant`: checked, never used.
+    Other,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Flag,
+    Text,
+    Int,
+}
+
+struct Opt {
+    short: Option<char>,
+    long: &'static str,
+    kind: Kind,
+}
+
+const fn opt(short: Option<char>, long: &'static str, kind: Kind) -> Opt {
+    Opt { short, long, kind }
+}
+
+/// notify-send 0.8's options.
+const OPTIONS: &[Opt] = &[
+    opt(Some('?'), "help", Kind::Flag),
+    opt(Some('u'), "urgency", Kind::Text),
+    opt(Some('t'), "expire-time", Kind::Int),
+    opt(Some('a'), "app-name", Kind::Text),
+    opt(Some('i'), "icon", Kind::Text),
+    opt(Some('n'), "app-icon", Kind::Text),
+    opt(Some('c'), "category", Kind::Text),
+    opt(Some('e'), "transient", Kind::Flag),
+    opt(Some('h'), "hint", Kind::Text),
+    opt(Some('p'), "print-id", Kind::Flag),
+    opt(None, "id-fd", Kind::Int),
+    opt(Some('r'), "replace-id", Kind::Int),
+    opt(Some('w'), "wait", Kind::Flag),
+    opt(Some('A'), "action", Kind::Text),
+    opt(None, "selected-action-fd", Kind::Int),
+    opt(None, "activation-token-fd", Kind::Int),
+    opt(Some('v'), "version", Kind::Flag),
+];
+
+/// The options as given.
+#[derive(Default)]
+struct Raw {
+    urgency: Option<Urgency>,
+    app_name: Option<String>,
+    icon: Option<String>,
+    app_icon: Option<String>,
+    transient: bool,
+    hints: Vec<(String, Hint)>,
+    print_id: bool,
+    replace_id: Option<i64>,
+    version: bool,
+    /// Options this version can't honour yet (`--wait`, `--action`, the fd options).
+    unsupported: Option<String>,
+    positionals: Vec<String>,
+}
+
+impl Raw {
+    /// Take one option and its value (`None` for flags). `Ok(false)`: `--help`, stop here.
+    fn take(&mut self, o: &Opt, shown: &str, value: Option<String>) -> Result<bool, String> {
+        let int = || -> Result<i64, String> {
+            let v = value.as_deref().unwrap_or_default();
+            parse_int(v).ok_or_else(|| format!("Cannot parse integer value “{v}” for {shown}"))
+        };
+        match o.long {
+            "help" => return Ok(false),
+            "urgency" => self.urgency = Some(parse_urgency(value.as_deref().unwrap_or_default())?),
+            "expire-time" => {
+                // Windows decides how long a toast stays on screen; only checked
+                int()?;
+            }
+            "app-name" => self.app_name = value,
+            "icon" => self.icon = value,
+            "app-icon" => self.app_icon = value,
+            "category" => {}
+            "transient" => self.transient = true,
+            "hint" => self
+                .hints
+                .push(parse_hint(value.as_deref().unwrap_or_default())?),
+            "print-id" => self.print_id = true,
+            "replace-id" => self.replace_id = Some(int()?),
+            "version" => self.version = true,
+            _ => {
+                if o.kind == Kind::Int {
+                    int()?;
+                }
+                self.unsupported.get_or_insert_with(|| shown.to_string());
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Parse notify-send's arguments (without the program name).
+pub fn parse(args: &[OsString]) -> Result<Parsed, String> {
+    let args = args
+        .iter()
+        .map(|a| {
+            a.to_str().map(str::to_string).ok_or_else(|| {
+                format!(
+                    "Invalid UTF-8 provided for parameter: {}",
+                    a.to_string_lossy()
+                )
+            })
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+    let mut raw = Raw::default();
+    let mut i = 0;
+    let mut options_done = false;
+    while i < args.len() {
+        let arg = &args[i];
+        i += 1;
+        if options_done || arg == "-" || !arg.starts_with('-') {
+            raw.positionals.push(arg.clone());
+            continue;
+        }
+        if arg == "--" {
+            options_done = true;
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v.to_string())),
+                None => (long, None),
+            };
+            let o = OPTIONS
+                .iter()
+                .find(|o| o.long == name)
+                .ok_or_else(|| format!("Unknown option {arg}"))?;
+            let shown = format!("--{name}");
+            let value = match (o.kind, inline) {
+                (Kind::Flag, None) => None,
+                (Kind::Flag, Some(_)) => {
+                    return Err(format!("Option {shown} does not take an argument"));
+                }
+                (_, Some(v)) => Some(v),
+                (_, None) => {
+                    let v = args
+                        .get(i)
+                        .ok_or_else(|| format!("Missing argument for {shown}"))?;
+                    i += 1;
+                    Some(v.clone())
+                }
+            };
+            if !raw.take(o, &shown, value)? {
+                return Ok(Parsed::Help);
+            }
+            continue;
+        }
+        // a cluster of short options: `-pe`, `-t5000`, `-pt 5000`
+        let cluster = &arg[1..];
+        for (at, c) in cluster.char_indices() {
+            let o = OPTIONS
+                .iter()
+                .find(|o| o.short == Some(c))
+                .ok_or_else(|| format!("Unknown option {arg}"))?;
+            let shown = format!("-{c}");
+            if o.kind == Kind::Flag {
+                if !raw.take(o, &shown, None)? {
+                    return Ok(Parsed::Help);
+                }
+                continue;
+            }
+            let rest = &cluster[at + c.len_utf8()..];
+            let value = if rest.is_empty() {
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| format!("Missing argument for {shown}"))?;
+                i += 1;
+                v.clone()
+            } else {
+                rest.to_string()
+            };
+            raw.take(o, &shown, Some(value))?;
+            break;
+        }
+    }
+    if raw.version {
+        return Ok(Parsed::Version);
+    }
+    if let Some(o) = &raw.unsupported {
+        return Err(format!(
+            "notify-send: {o} isn't supported by toastback yet (no --wait, --action or --*-fd)"
+        ));
+    }
+    request(raw).map(|r| Parsed::Show(Box::new(r)))
+}
+
+/// Map the parsed options onto a spec.
+fn request(raw: Raw) -> Result<Request, String> {
+    let (summary, body) = match raw.positionals.as_slice() {
+        [] => return Err("No summary specified.".into()),
+        [s] => (s.clone(), None),
+        [s, b] => (s.clone(), Some(b.as_str())),
+        _ => return Err("Invalid number of options.".into()),
+    };
+    let body = body
+        .map(compress)
+        .transpose()?
+        .map(|b| strip_markup(&b))
+        .filter(|b| !b.trim().is_empty());
+    // a toast needs a title: an empty summary takes the body's place
+    let (title, body) = match (summary.trim().is_empty(), body) {
+        (false, body) => (summary, body),
+        (true, Some(body)) => (body, None),
+        (true, None) => return Err("No summary specified.".into()),
+    };
+
+    let mut urgency = raw.urgency.unwrap_or(Urgency::Normal);
+    let mut transient = raw.transient;
+    let mut silent = false;
+    let mut image_path = None;
+    let mut tag = None;
+    // libnotify sends the hints after -u and -e, so a hint wins
+    for (name, value) in raw.hints {
+        match (name.as_str(), value) {
+            ("urgency", Hint::Int(n)) => {
+                urgency = match n {
+                    0 => Urgency::Low,
+                    2 => Urgency::Critical,
+                    _ => Urgency::Normal,
+                }
+            }
+            ("image-path" | "image_path", Hint::Str(s)) => image_path = Some(s),
+            ("suppress-sound", Hint::Bool(b)) => silent = b,
+            ("transient", Hint::Bool(b)) => transient = b,
+            (
+                "x-canonical-private-synchronous"
+                | "x-dunst-stack-tag"
+                | "synchronous"
+                | "private-synchronous",
+                Hint::Str(s),
+            ) if !s.is_empty() => tag = Some(s),
+            _ => {}
+        }
+    }
+
+    let critical = urgency == Urgency::Critical;
+    let spec = Spec {
+        title,
+        body,
+        attribution: raw.app_name.filter(|a| !a.trim().is_empty()),
+        scenario: if critical {
+            Scenario::Urgent
+        } else {
+            Scenario::Default
+        },
+        sound: if silent || urgency == Urgency::Low {
+            Sound::Silent
+        } else {
+            Sound::Default
+        },
+        // a scenario other than default needs a button
+        buttons: if critical {
+            vec![Button {
+                id: "dismiss".into(),
+                label: "Dismiss".into(),
+                ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        },
+        expires: transient.then(|| TRANSIENT_EXPIRES.into()),
+        ..Default::default()
+    };
+    // the image-path hint is the notification's image; --icon and --app-icon come after it
+    let icons = [image_path, raw.icon, raw.app_icon]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| icon_source(&s))
+        .collect();
+    let number = match raw.replace_id {
+        Some(n) if n > 0 => Some(u32::try_from(n).unwrap_or(u32::MAX)),
+        _ => tag.as_deref().map(tag_number),
+    };
+    Ok(Request {
+        spec,
+        icons,
+        number,
+        print_id: raw.print_id,
+    })
+}
+
+/// The id of notification number `n`.
+pub fn id_for(n: u32) -> String {
+    format!("{ID_PREFIX}{n}")
+}
+
+/// GLib's integer syntax: decimal, or hex with `0x`; an optional sign.
+fn parse_int(s: &str) -> Option<i64> {
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(d) => (true, d),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let n = match digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+        None => digits.parse::<i64>().ok()?,
+    };
+    let n = if neg { -n } else { n };
+    i32::try_from(n).ok().map(i64::from)
+}
+
+fn parse_urgency(s: &str) -> Result<Urgency, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "low" => Ok(Urgency::Low),
+        "normal" => Ok(Urgency::Normal),
+        "critical" => Ok(Urgency::Critical),
+        _ => Err(format!(
+            "Unknown urgency {s} specified. Known urgency levels: low, normal, critical."
+        )),
+    }
+}
+
+/// `TYPE:NAME:VALUE`, checked like libnotify checks it.
+fn parse_hint(s: &str) -> Result<(String, Hint), String> {
+    let mut parts = s.splitn(3, ':');
+    let (Some(kind), Some(name), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err("Invalid hint syntax specified. Use TYPE:NAME:VALUE.".into());
+    };
+    let bad = || format!("Invalid hint value “{value}” for type {kind}");
+    let starts_with_digit = value.starts_with(|c: char| c.is_ascii_digit());
+    let hint = match kind.to_ascii_lowercase().as_str() {
+        "string" => Hint::Str(value.to_string()),
+        "int" if starts_with_digit => Hint::Int(value.parse().map_err(|_| bad())?),
+        "double" if starts_with_digit => {
+            value.parse::<f64>().map_err(|_| bad())?;
+            Hint::Other
+        }
+        "byte" => {
+            let n = match value.strip_prefix("0x") {
+                Some(hex) => u8::from_str_radix(hex, 16),
+                None => value.parse::<u8>(),
+            };
+            Hint::Int(i64::from(n.map_err(|_| bad())?))
+        }
+        "boolean" => Hint::Bool(
+            value.eq_ignore_ascii_case("true")
+                || value.starts_with(|c: char| c.is_ascii_digit() && c != '0'),
+        ),
+        "variant" => Hint::Other,
+        "int" | "double" => return Err(bad()),
+        _ => {
+            return Err(format!(
+                "Invalid hint type “{kind}”. Valid types are boolean, int, double, string, byte and variant."
+            ));
+        }
+    };
+    Ok((name.to_string(), hint))
+}
+
+/// What notify-send does to the body (GLib's `g_strcompress`): `\n`, `\t`, `\b`, `\f`, `\r`,
+/// `\v`, octal `\NNN`; any other escaped character stands for itself.
+fn compress(s: &str) -> Result<String, String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let Some(&c) = b.get(i) else { break }; // a trailing backslash is dropped
+        if (b'0'..=b'7').contains(&c) {
+            let mut v: u32 = 0;
+            let start = i;
+            while i < b.len() && i - start < 3 && (b'0'..=b'7').contains(&b[i]) {
+                v = v * 8 + u32::from(b[i] - b'0');
+                i += 1;
+            }
+            out.push(v as u8); // GLib truncates the same way
+            continue;
+        }
+        out.push(match c {
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0b,
+            other => other,
+        });
+        i += 1;
+    }
+    String::from_utf8(out).map_err(|_| "Invalid UTF-8 provided for parameter: body".into())
+}
+
+/// Tags of the notification body markup (freedesktop's, plus the Pango ones some daemons accept).
+const MARKUP_TAGS: &[&str] = &[
+    "a", "b", "big", "i", "img", "s", "small", "span", "sub", "sup", "tt", "u",
+];
+
+/// The body as plain text: markup tags removed, entities decoded. A `<` that doesn't start one
+/// of the known tags stays.
+fn strip_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        match tail.find('>') {
+            Some(end) if is_markup_tag(&tail[1..end]) => rest = &tail[end + 1..],
+            _ => {
+                out.push('<');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    decode_entities(&out)
+}
+
+fn is_markup_tag(inner: &str) -> bool {
+    let inner = inner.strip_prefix('/').unwrap_or(inner);
+    let len = inner
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(inner.len());
+    let (name, after) = inner.split_at(len);
+    MARKUP_TAGS.contains(&name.to_ascii_lowercase().as_str())
+        && (after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || c == '/'))
+}
+
+/// `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&#N;` and `&#xN;`; anything else stays.
+fn decode_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let decoded = tail.find(';').filter(|&e| e <= 10).and_then(|end| {
+            let c = match &tail[1..end] {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                n => n
+                    .strip_prefix("#x")
+                    .or_else(|| n.strip_prefix("#X"))
+                    .map(|h| u32::from_str_radix(h, 16))
+                    .or_else(|| n.strip_prefix('#').map(str::parse::<u32>))
+                    .and_then(Result::ok)
+                    .and_then(char::from_u32),
+            }?;
+            Some((c, end))
+        });
+        match decoded {
+            Some((c, end)) => {
+                out.push(c);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// What an `--icon`, `--app-icon` or `image-path` value names: an image path (from a path or a
+/// `file://` URI), a built-in icon, or nothing (other icon names come from Linux icon themes).
+fn icon_source(s: &str) -> Option<String> {
+    let s = s.trim();
+    if let Some(path) = s.strip_prefix("file://") {
+        // file:///path, or file://localhost/path
+        let path = path.strip_prefix("localhost").unwrap_or(path);
+        return Some(percent_decode(path)).filter(|p| !p.is_empty());
+    }
+    if s.contains('/') || s.contains('\\') {
+        return Some(s.to_string());
+    }
+    let name = s.strip_suffix("-symbolic").unwrap_or(s);
+    let stock = match name {
+        "dialog-information" | "dialog-info" | "info" | "information" => StockIcon::Info,
+        "dialog-warning" | "warning" | "emblem-warning" => StockIcon::Warning,
+        "dialog-error" | "error" | "emblem-error" => StockIcon::Error,
+        "dialog-question" | "question" => StockIcon::Question,
+        _ => return None,
+    };
+    Some(stock.name().to_string())
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b[i], hex) {
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Images Windows can't show in a toast, whatever the file holds.
+fn is_unsupported_image(path: &str) -> bool {
+    let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    matches!(ext.as_deref(), Some("svg" | "svgz" | "xpm"))
+}
+
+/// The first candidate `usable` accepts; built-in icons always are.
+fn choose_icon(candidates: &[String], usable: impl Fn(&str) -> bool) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| {
+            StockIcon::from_name(c).is_some() || (!is_unsupported_image(c) && usable(c.as_str()))
+        })
+        .cloned()
+}
+
+/// A stack tag's number: the same tag gives the same id, so the new toast replaces the old one.
+fn tag_number(tag: &str) -> u32 {
+    // FNV-1a: stable across versions and platforms
+    let h = tag.bytes().fold(0x811c_9dc5_u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    });
+    h % 0x7fff_ffff + 1
+}
+
+/// Show what notify-send's command line asks for. Returns the exit code.
+#[cfg(windows)]
+pub fn run(store: &crate::store::Store, args: &[OsString], ctx: &crate::spec::Context) -> u8 {
+    use crate::{install, show};
+
+    let req = match parse(args) {
+        Ok(Parsed::Help) => {
+            out!("{HELP}");
+            return 0;
+        }
+        Ok(Parsed::Version) => {
+            outln!(
+                "notify-send {LIBNOTIFY_VERSION} (toastback {})",
+                env!("CARGO_PKG_VERSION")
+            );
+            return 0;
+        }
+        Ok(Parsed::Show(r)) => *r,
+        Err(msg) => {
+            errln!("{msg}");
+            return EXIT_ERROR;
+        }
+    };
+    let Request {
+        mut spec,
+        icons,
+        number,
+        print_id,
+    } = req;
+    spec.context.fill_from(ctx);
+    // notify-send never fails over an icon: one that can't be read is left out
+    let icon = choose_icon(&icons, |p| {
+        crate::context::to_windows_path(p, &spec.context)
+            .is_ok_and(|w| std::fs::metadata(w).is_ok_and(|m| m.is_file()))
+    });
+    spec.icon = icon;
+    let number = match number {
+        Some(n) => n,
+        None => match getrandom::u32() {
+            Ok(r) => r % 0x7fff_ffff + 1,
+            Err(e) => {
+                errln!("Failed to show notification: OS RNG: {e}");
+                return EXIT_ERROR;
+            }
+        },
+    };
+    spec.id = Some(id_for(number));
+    if let Err(e) = spec.validate() {
+        errln!("notify-send: {e:#}");
+        return EXIT_ERROR;
+    }
+    match install::is_installed(store) {
+        Ok(true) => {}
+        Ok(false) => {
+            errln!("notify-send: toastback isn't installed; run `toastback.exe install` first");
+            return EXIT_ERROR;
+        }
+        Err(e) => {
+            errln!("notify-send: {e:#}; run `toastback.exe install` to repair it");
+            return EXIT_ERROR;
+        }
+    }
+    match show::show_spec(store, spec) {
+        Ok(_) => {
+            if print_id {
+                outln!("{number}");
+            }
+            0
+        }
+        Err((_, e)) => {
+            errln!("Failed to show notification: {e:#}");
+            EXIT_ERROR
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_args(args: &[&str]) -> Result<Parsed, String> {
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        parse(&args)
+    }
+
+    fn req(args: &[&str]) -> Request {
+        match parse_args(args) {
+            Ok(Parsed::Show(r)) => *r,
+            other => panic!("{args:?}: {other:?}"),
+        }
+    }
+
+    fn err(args: &[&str]) -> String {
+        match parse_args(args) {
+            Err(e) => e,
+            other => panic!("{args:?}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn summary_and_body() {
+        let r = req(&["Backup", "42 GB"]);
+        assert_eq!(r.spec.title, "Backup");
+        assert_eq!(r.spec.body.as_deref(), Some("42 GB"));
+        assert_eq!(r.number, None);
+        assert!(!r.print_id);
+        assert_eq!(r.spec.scenario, Scenario::Default);
+        assert!(r.spec.buttons.is_empty());
+        r.spec.validate().unwrap();
+
+        assert_eq!(req(&["only"]).spec.body, None);
+        assert_eq!(err(&[]), "No summary specified.");
+        assert_eq!(err(&["a", "b", "c"]), "Invalid number of options.");
+        // an empty summary: the body becomes the title
+        let r = req(&["", "text"]);
+        assert_eq!((r.spec.title.as_str(), r.spec.body), ("text", None));
+        assert_eq!(err(&[""]), "No summary specified.");
+    }
+
+    #[test]
+    fn options_follow_glib_rules() {
+        // options after the positionals, = and separate values, attached short values, clusters
+        let r = req(&["T", "-u", "low", "--app-name=CI", "-pe", "-r42"]);
+        assert_eq!(r.spec.sound, Sound::Silent);
+        assert_eq!(r.spec.attribution.as_deref(), Some("CI"));
+        assert!(r.print_id);
+        assert_eq!(r.spec.expires.as_deref(), Some(TRANSIENT_EXPIRES));
+        assert_eq!(r.number, Some(42));
+        let r = req(&["-pr", "7", "T"]);
+        assert_eq!((r.print_id, r.number), (true, Some(7)));
+        // a value is taken even when it starts with -
+        let r = req(&["-a", "-x-", "T"]);
+        assert_eq!(r.spec.attribution.as_deref(), Some("-x-"));
+        // -- ends the options; - is a positional
+        let r = req(&["--", "-T", "-u"]);
+        assert_eq!(
+            (r.spec.title.as_str(), r.spec.body.as_deref()),
+            ("-T", Some("-u"))
+        );
+        assert_eq!(req(&["-"]).spec.title, "-");
+        // -t is checked, not used; -c is ignored
+        req(&["-t", "5000", "-c", "device,email", "T"]);
+        req(&["--expire-time=-1", "T"]);
+        assert_eq!(
+            err(&["-t", "soon", "T"]),
+            "Cannot parse integer value “soon” for -t"
+        );
+        assert_eq!(err(&["-x", "T"]), "Unknown option -x");
+        assert_eq!(err(&["--bogus", "T"]), "Unknown option --bogus");
+        assert_eq!(err(&["T", "-u"]), "Missing argument for -u");
+        assert_eq!(
+            err(&["--wait=1", "T"]),
+            "Option --wait does not take an argument"
+        );
+        assert_eq!(
+            err(&["-u", "HIGH", "T"]),
+            "Unknown urgency HIGH specified. Known urgency levels: low, normal, critical."
+        );
+        // a negative number in the text is an option, as in notify-send
+        assert_eq!(err(&["Temp", "-5 degrees"]), "Unknown option -5 degrees");
+    }
+
+    #[test]
+    fn help_and_version() {
+        assert_eq!(parse_args(&["-?"]), Ok(Parsed::Help));
+        assert_eq!(parse_args(&["--help", "-x"]), Ok(Parsed::Help));
+        assert_eq!(parse_args(&["-v"]), Ok(Parsed::Version));
+        assert_eq!(
+            parse_args(&["--version", "a", "b", "c"]),
+            Ok(Parsed::Version)
+        );
+        // -h is --hint, as in notify-send
+        assert_eq!(err(&["-h"]), "Missing argument for -h");
+    }
+
+    #[test]
+    fn wait_and_actions_are_refused_for_now() {
+        for args in [
+            &["-w", "T"][..],
+            &["--action=yes=Yes", "T"],
+            &["-A", "Yes", "T"],
+            &["--id-fd", "3", "T"],
+            &["--selected-action-fd=3", "T"],
+            &["--activation-token-fd", "3", "T"],
+        ] {
+            let e = err(args);
+            assert!(e.contains("isn't supported by toastback yet"), "{e}");
+        }
+    }
+
+    #[test]
+    fn critical_is_urgent_with_a_dismiss_button() {
+        let r = req(&["-u", "CRITICAL", "Disk full"]);
+        assert_eq!(r.spec.scenario, Scenario::Urgent);
+        assert_eq!(r.spec.sound, Sound::Default);
+        assert_eq!(r.spec.buttons.len(), 1);
+        assert_eq!(r.spec.buttons[0].label, "Dismiss");
+        assert!(r.spec.buttons[0].run.is_none());
+        r.spec.validate().unwrap();
+    }
+
+    #[test]
+    fn hints() {
+        let r = req(&[
+            "-h",
+            "STRING:image-path:/usr/share/pixmaps/x.png",
+            "-h",
+            "boolean:suppress-sound:true",
+            "-h",
+            "boolean:transient:1",
+            "-h",
+            "string:x-dunst-stack-tag:volume",
+            "-h",
+            "int:value:40",
+            "-h",
+            "double:ratio:0.5",
+            "-h",
+            "variant:x:<1>",
+            "-h",
+            "string:sound-name:message-new-instant",
+            "-i",
+            "dialog-warning",
+            "T",
+        ]);
+        assert_eq!(r.icons, ["/usr/share/pixmaps/x.png", "warning"]);
+        assert_eq!(r.spec.sound, Sound::Silent);
+        assert_eq!(r.spec.expires.as_deref(), Some(TRANSIENT_EXPIRES));
+        // the same tag, the same number; -r wins over it
+        assert_eq!(r.number, Some(tag_number("volume")));
+        assert_eq!(
+            req(&["-h", "string:synchronous:volume", "T"]).number,
+            r.number
+        );
+        assert_ne!(
+            req(&["-h", "string:synchronous:brightness", "T"]).number,
+            r.number
+        );
+        assert_eq!(
+            req(&["-h", "string:synchronous:volume", "-r", "9", "T"]).number,
+            Some(9)
+        );
+        // a value may contain colons
+        let r = req(&["-h", "string:image-path:C:\\icons\\a.png", "T"]);
+        assert_eq!(r.icons, ["C:\\icons\\a.png"]);
+        // the urgency hint, sent after -u, wins
+        let r = req(&["-u", "low", "-h", "byte:urgency:2", "T"]);
+        assert_eq!(r.spec.scenario, Scenario::Urgent);
+        let r = req(&["-h", "byte:urgency:0x00", "T"]);
+        assert_eq!(r.spec.sound, Sound::Silent);
+
+        assert_eq!(
+            err(&["-h", "string:only-two", "T"]),
+            "Invalid hint syntax specified. Use TYPE:NAME:VALUE."
+        );
+        assert!(err(&["-h", "int:value:-1", "T"]).contains("Invalid hint value"));
+        assert!(err(&["-h", "byte:urgency:256", "T"]).contains("Invalid hint value"));
+        assert!(err(&["-h", "float:x:1", "T"]).contains("Invalid hint type"));
+    }
+
+    #[test]
+    fn icons() {
+        assert_eq!(
+            icon_source("dialog-error-symbolic").as_deref(),
+            Some("error")
+        );
+        assert_eq!(icon_source("dialog-information").as_deref(), Some("info"));
+        assert_eq!(icon_source("firefox"), None);
+        assert_eq!(icon_source("icon.png"), None); // a name, as for the daemons
+        assert_eq!(icon_source("./icon.png").as_deref(), Some("./icon.png"));
+        assert_eq!(
+            icon_source("file:///home/g/My%20Icons/a.png").as_deref(),
+            Some("/home/g/My Icons/a.png")
+        );
+        assert_eq!(
+            icon_source("file://localhost/tmp/a.png").as_deref(),
+            Some("/tmp/a.png")
+        );
+        // -i before -n; the first usable candidate wins, built-ins always are
+        let r = req(&["-n", "/apps/app.png", "-i", "/missing.png", "T"]);
+        assert_eq!(r.icons, ["/missing.png", "/apps/app.png"]);
+        assert_eq!(
+            choose_icon(&r.icons, |p| p != "/missing.png").as_deref(),
+            Some("/apps/app.png")
+        );
+        assert_eq!(choose_icon(&r.icons, |_| false), None);
+        assert_eq!(
+            choose_icon(&["/a.svg".into(), "info".into()], |_| true).as_deref(),
+            Some("info")
+        );
+    }
+
+    #[test]
+    fn body_escapes_and_markup() {
+        let body = |b: &str| req(&["T", b]).spec.body;
+        assert_eq!(
+            body(r"line 1\nline 2\ttab \\ \q \101").as_deref(),
+            Some("line 1\nline 2\ttab \\ q A")
+        );
+        // the summary is used as given
+        assert_eq!(req(&[r"a\nb"]).spec.title, r"a\nb");
+        assert_eq!(
+            body(r#"<b>Done</b> in <i>4 min</i>: <a href="https://x">log</a>"#).as_deref(),
+            Some("Done in 4 min: log")
+        );
+        assert_eq!(
+            body("<span foreground='red'>red</span><br>").as_deref(),
+            Some("red<br>")
+        );
+        assert_eq!(
+            body("a < b &amp;&amp; c > d, AT&T &#65;&#x42; &bogus;").as_deref(),
+            Some("a < b && c > d, AT&T AB &bogus;")
+        );
+        assert_eq!(body("&lt;b&gt;").as_deref(), Some("<b>"));
+        // only markup: no body
+        assert_eq!(body("<b></b>"), None);
+        assert_eq!(
+            err(&["T", r"\377"]),
+            "Invalid UTF-8 provided for parameter: body"
+        );
+    }
+
+    #[test]
+    fn ids() {
+        assert_eq!(id_for(42), "ns-42");
+        let n = tag_number("volume");
+        assert!((1..=0x7fff_ffff).contains(&n));
+        assert_eq!(n, tag_number("volume"));
+        // -r 0 asks for a new notification
+        assert_eq!(req(&["-r", "0", "T"]).number, None);
+        let mut spec = req(&["T"]).spec;
+        spec.id = Some(id_for(u32::MAX));
+        spec.validate().unwrap();
+    }
+}

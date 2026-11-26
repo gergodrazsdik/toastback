@@ -1,6 +1,7 @@
 # 0001: Baseline: the plan's locked decisions
 
-- Status: accepted, amended by [0003](0003-terminal-output.md) (a second exe) and [0013](0013-winget.md) (winget)
+- Status: accepted, amended by [0003](0003-terminal-output.md) (a second exe), [0013](0013-winget.md) (winget) and
+  [0017](0017-notify-send.md) (an opt-in wait)
 - Date: 2026-10-14
 
 ## Context and problem statement

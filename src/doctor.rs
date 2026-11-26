@@ -49,6 +49,43 @@ pub fn exit_code(checks: &[Check]) -> u8 {
     u8::from(checks.iter().any(|c| c.status == Status::Fail))
 }
 
+/// The notify-send wrapper in the caller's distro: `declined` after `install --no-notify-send`.
+pub fn notify_send_check(
+    s: &crate::install::NotifySendStatus,
+    declined: bool,
+    version: &str,
+) -> (Status, String) {
+    let theirs = s.content.is_some() && !s.is_ours();
+    if declined && (s.content.is_none() || theirs) {
+        return (Status::Ok, "off (install --no-notify-send)".into());
+    }
+    if s.content.is_none() {
+        return (
+            Status::Warn,
+            "missing: run `toastback.exe install` (or `install --no-notify-send` to keep it off)"
+                .into(),
+        );
+    }
+    if theirs {
+        return (
+            Status::Warn,
+            format!("{} isn't toastback's, so install left it alone", s.path),
+        );
+    }
+    if s.content.as_deref() != Some(&crate::install::render_notify_send(version)) {
+        return (Status::Warn, "outdated: run `toastback.exe install`".into());
+    }
+    if s.resolved != s.path {
+        let why = if s.resolved.is_empty() {
+            "~/.local/bin is not on PATH".to_string()
+        } else {
+            format!("{} comes first on PATH", s.resolved)
+        };
+        return (Status::Warn, format!("not used: {why}"));
+    }
+    (Status::Ok, format!("{} shows toasts", s.path))
+}
+
 #[cfg(windows)]
 pub use imp::run;
 
@@ -218,6 +255,15 @@ mod imp {
                 Ok(None) => Check::new(name, Bad, "missing: run `toastback.exe install`"),
                 Err(e) => Check::new(name, Warn, format!("{e:#}")),
             });
+            let name = format!("notify-send ({distro})");
+            let declined = record.as_ref().is_some_and(|r| r.no_notify_send);
+            checks.push(match install::read_notify_send(&target) {
+                Ok(s) => {
+                    let (status, detail) = super::notify_send_check(&s, declined, version);
+                    Check::new(name, status, detail)
+                }
+                Err(e) => Check::new(name, Warn, format!("{e:#}")),
+            });
         }
 
         let probe = store.root().join("doctor.tmp");
@@ -235,6 +281,52 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_send_states() {
+        use crate::install::{NotifySendStatus, render_notify_send};
+        let ours = render_notify_send("1.5.0");
+        let status = |content: Option<&str>, resolved: &str| NotifySendStatus {
+            path: "/home/g/.local/bin/notify-send".into(),
+            resolved: resolved.into(),
+            content: content.map(str::to_string),
+        };
+        let path = "/home/g/.local/bin/notify-send";
+        let check = |s: &NotifySendStatus, declined| notify_send_check(s, declined, "1.5.0").0;
+        assert_eq!(check(&status(Some(&ours), path), false), Status::Ok);
+        assert_eq!(check(&status(Some(&ours), path), true), Status::Ok);
+        assert_eq!(
+            check(&status(None, "/usr/bin/notify-send"), false),
+            Status::Warn
+        );
+        assert_eq!(check(&status(None, ""), true), Status::Ok);
+        assert_eq!(
+            check(&status(Some("#!/bin/sh\nmine\n"), path), false),
+            Status::Warn
+        );
+        assert_eq!(
+            check(&status(Some("#!/bin/sh\nmine\n"), path), true),
+            Status::Ok
+        );
+        let old = render_notify_send("1.4.0");
+        assert!(
+            notify_send_check(&status(Some(&old), path), false, "1.5.0")
+                .1
+                .contains("outdated")
+        );
+        let (s, detail) = notify_send_check(
+            &status(Some(&ours), "/usr/local/bin/notify-send"),
+            false,
+            "1.5.0",
+        );
+        assert_eq!(s, Status::Warn);
+        assert!(
+            detail.contains("/usr/local/bin/notify-send comes first"),
+            "{detail}"
+        );
+        let detail = notify_send_check(&status(Some(&ours), ""), false, "1.5.0").1;
+        assert!(detail.contains("not on PATH"), "{detail}");
+    }
 
     #[test]
     fn renders_and_exit_code() {

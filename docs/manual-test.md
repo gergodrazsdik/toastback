@@ -132,6 +132,25 @@ covered by the smoke job, so here they only need to be checked once.
     a toast, also with `WSL_DISTRO_NAME=` set but empty. A `{"wsl": "echo \"$0\""}` callback logs `bash`, and `sh` with
     `"distro"` set to a distro without bash.
 
+## notify-send
+
+45. After `just install`, the output has "wrote ~/.local/bin/notify-send in <distro>", `command -v notify-send` prints
+    `~/.local/bin/notify-send`, and `toastback doctor` shows `notify-send (<distro>)` as `ok`.
+46. `notify-send -a CI -i dialog-warning "Disk almost full" "<b>93%</b> used\nClean up soon"` prints nothing, exits 0
+    and shows a toast with the warning icon, "CI" as attribution and a two-line body without the `<b>` tags.
+    `notify-send -u low Quiet` makes no sound. `notify-send -u critical "Disk full"` stays on screen with a
+    **Dismiss** button; on Windows 11 also with Do not disturb on. `notify-send -i firefox -n /no/such.png x` shows a
+    toast without an icon.
+47. `id=$(notify-send -p "Copying…")`, then `notify-send -r "$id" "Copy done"`: the second toast replaces the first.
+    `notify-send -h string:x-dunst-stack-tag:vol "Volume 40%"`, then the same with `"Volume 50%"`: one toast is left.
+    `notify-send -e Transient` is gone from the notification center after about 10 seconds.
+48. `notify-send -A yes=Yes Question` and `notify-send -w x` exit 1 with "isn't supported by toastback yet";
+    `notify-send --version` prints `notify-send 0.8.9 (toastback <version>)`.
+49. `toastback install --no-notify-send` removes the wrapper, and `notify-send` is the distro's own again (or not
+    found); `just install` doesn't bring it back, and `doctor` says "off". `toastback install --notify-send` does.
+    With a file of your own at `~/.local/bin/notify-send`, `install` leaves it alone with a note and `doctor` warns.
+    `toastback uninstall` removes the wrapper; your own file stays.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

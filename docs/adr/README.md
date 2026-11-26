@@ -11,12 +11,12 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-baseline.md) | Baseline: the plan's locked decisions | accepted, amended by 0003, 0013 |
+| [0001](0001-baseline.md) | Baseline: the plan's locked decisions | accepted, amended by 0003, 0013, 0017 |
 | [0002](0002-platform-spikes.md) | Platform spikes: registry-only app id, protocol activation, TaskDialog, cross-built GUI exe | accepted |
 | [0003](0003-terminal-output.md) | Terminal output: attach the parent console, plus a console-subsystem `toastback-cli.exe` | accepted |
 | [0004](0004-running-callbacks.md) | Running callbacks: `wsl.exe --exec`, encoded PowerShell, raw cmd, one click per notification | accepted, amended by 0014 |
 | [0005](0005-spec-and-cli.md) | Spec and CLI: the spec's context wins, `show` is the default command, WSL paths | accepted |
-| [0006](0006-install-and-uninstall.md) | Install and uninstall: recorded shims, marked files, PATH, uninstall while running | accepted |
+| [0006](0006-install-and-uninstall.md) | Install and uninstall: recorded shims, marked files, PATH, uninstall while running | accepted, amended by 0017 |
 | [0007](0007-dialogs.md) | Dialogs: TaskDialog mapping, on top, a detached dialog process, one callback path | accepted |
 | [0008](0008-commands-and-click-feedback.md) | Commands and click feedback: `validate`, `remove`, `clear`, `doctor`, `notify_on_success` | accepted |
 | [0009](0009-installer-and-line-endings.md) | Installer and line endings: a script that survives a pipe, LF everywhere | accepted |
@@ -27,6 +27,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0014](0014-posix-sh.md) | No bash needed in WSL | accepted |
 | [0015](0015-pinned-ci.md) | Pinned CI: actions by commit SHA, linters by version and digest, a 7-day cooldown | accepted |
 | [0016](0016-settings-as-code.md) | Repository settings as code | accepted |
+| [0017](0017-notify-send.md) | notify-send: a subcommand, a wrapper installed by default, and an opt-in wait | accepted |
 
 ## Numbering and status
 

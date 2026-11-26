@@ -57,6 +57,15 @@ impl Cli {
             }
         }
         let first = args.get(i).and_then(|a| a.to_str());
+        // notify-send's arguments follow GLib's rules, not clap's: hand them over untouched
+        if first == Some("notify-send") {
+            let rest = args.split_off(i + 1);
+            let mut cli = Cli::try_parse_from(args)?;
+            if let Command::NotifySend { args } = &mut cli.command {
+                *args = rest;
+            }
+            return Ok(cli);
+        }
         let is_command = first.is_some_and(|f| {
             matches!(f, "-h" | "--help" | "-V" | "--version" | "help")
                 || Cli::command().get_subcommands().any(|c| c.get_name() == f)
@@ -68,9 +77,10 @@ impl Cli {
         Cli::try_parse_from(args)
     }
 
-    /// Is this the `show` command (also when it was the default)?
+    /// Does the exit code only say whether a notification was shown: `show` (also when it was
+    /// the default) and `notify-send`?
     pub fn is_show(&self) -> bool {
-        matches!(self.command, Command::Show(_))
+        matches!(self.command, Command::Show(_) | Command::NotifySend { .. })
     }
 }
 
@@ -195,7 +205,15 @@ enum Command {
     /// Show a notification (the default command)
     #[command(after_help = HELP_EXAMPLES)]
     Show(ShowArgs),
-    /// Install for the current user: copy the exes, register them, write the WSL shim
+    /// Show a notification from notify-send's command line (see `toastback notify-send --help`)
+    #[command(name = "notify-send", disable_help_flag = true)]
+    NotifySend {
+        /// notify-send's arguments, as given
+        #[arg(skip)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Install for the current user: copy the exes, register them, write the WSL shim and the
+    /// notify-send wrapper
     Install {
         /// Distro(s) to write the shim to: a name, `default`, `all` (without Docker Desktop's) or
         /// `none`. Without it: the calling distro, else the ones from the last install, else `default`
@@ -207,6 +225,12 @@ enum Command {
         /// Skip the test notification (for unattended installs and upgrades)
         #[arg(long)]
         quiet: bool,
+        /// Don't write ~/.local/bin/notify-send (and remove ours), now and in later installs
+        #[arg(long, conflicts_with = "notify_send")]
+        no_notify_send: bool,
+        /// Write ~/.local/bin/notify-send again after an earlier --no-notify-send
+        #[arg(long)]
+        notify_send: bool,
     },
     /// Remove everything `install` set up
     Uninstall {
@@ -279,14 +303,22 @@ pub fn run(cli: Cli) -> Result<u8> {
     }
     match cli.command {
         Command::Show(args) => Ok(show::show(&store, &args, &ctx)),
+        Command::NotifySend { args } => Ok(crate::notify_send::run(&store, &args, &ctx)),
         Command::Install {
             wsl,
             add_to_path,
             quiet,
+            no_notify_send,
+            notify_send,
         } => {
             let opts = install::Options {
                 wsl: wsl.as_deref(),
                 add_to_path,
+                notify_send: match (no_notify_send, notify_send) {
+                    (true, _) => Some(false),
+                    (_, true) => Some(true),
+                    _ => None,
+                },
             };
             install::install(&store, &opts, &ctx, env!("CARGO_PKG_VERSION"))?;
             if quiet {
@@ -509,7 +541,7 @@ mod tests {
 
         let cli = parse(&["--distro", "D", "install", "--wsl", "none"]);
         assert!(
-            matches!(cli.command, Command::Install { wsl: Some(ref w), add_to_path: false, quiet: false } if w == "none")
+            matches!(cli.command, Command::Install { wsl: Some(ref w), add_to_path: false, quiet: false, .. } if w == "none")
         );
         assert_eq!(cli.ctx.context().distro.as_deref(), Some("D"));
 
@@ -562,6 +594,38 @@ mod tests {
         // context flags after the subcommand work too (global)
         let cli = parse(&["log", "--distro", "D"]);
         assert_eq!(cli.ctx.context().distro.as_deref(), Some("D"));
+    }
+
+    #[test]
+    fn notify_send_gets_its_arguments_untouched() {
+        let cli = Cli::parse_with_default([
+            "toastback",
+            "--distro",
+            "D",
+            "notify-send",
+            "-t",
+            "-1",
+            "--help",
+            "--distro",
+            "x",
+            "Title",
+        ])
+        .unwrap();
+        assert!(cli.is_show());
+        assert_eq!(cli.ctx.context().distro.as_deref(), Some("D"));
+        let Command::NotifySend { args } = cli.command else {
+            panic!("not notify-send")
+        };
+        assert_eq!(
+            args,
+            ["-t", "-1", "--help", "--distro", "x", "Title"].map(std::ffi::OsString::from)
+        );
+        let cli = Cli::parse_with_default(["toastback", "notify-send"]).unwrap();
+        assert!(matches!(cli.command, Command::NotifySend { ref args } if args.is_empty()));
+        assert!(
+            Cli::parse_with_default(["toastback", "install", "--notify-send", "--no-notify-send"])
+                .is_err()
+        );
     }
 
     #[test]

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `toastback notify-send`: libnotify's `notify-send` command line, shown as a toast. It handles the summary and body
+  (escapes, markup), `-u`, `-i`, `-n`, `-a`, `-e`, `-p`, `-r`, the hints `urgency`, `image-path`, `suppress-sound`,
+  `transient` and the stack tags, and `-v`; `-w`, `-A` and the `--*-fd` options exit 1 for now.
+- `install` writes a `~/.local/bin/notify-send` wrapper next to the shim, so scripts that call `notify-send` show
+  Windows toasts unchanged. It leaves a `notify-send` that isn't toastback's alone. `install --no-notify-send` removes
+  it and keeps it off; `install --notify-send` brings it back. `uninstall` removes it, and `doctor` checks it.
+
 ## [1.4.0] - 2026-11-14
 
 ### Added

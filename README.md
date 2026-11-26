@@ -38,7 +38,8 @@ you use. Pick the method that matches how you work:
 
 Whichever you use, `install` copies `toastback.exe` and `toastback-cli.exe` to `%LOCALAPPDATA%\toastback\bin`,
 registers the `toastback://` protocol, the notification app id and an Apps & Features entry (HKCU only), writes the
-shim and shows a test notification. `toastback doctor` checks everything.
+shim and a [`notify-send` wrapper](#as-notify-send) next to it, and shows a test notification. `toastback doctor`
+checks everything.
 
 ### winget
 
@@ -115,6 +116,8 @@ Other `install` options:
 |---|---|
 | `--add-to-path` | add the install dir to your user PATH, for `toastback-cli` in cmd/PowerShell |
 | `--quiet` | skip the test notification |
+| `--no-notify-send` | don't write the [`notify-send` wrapper](#as-notify-send), and remove ours; later installs keep it off |
+| `--notify-send` | write the wrapper again after an earlier `--no-notify-send` |
 
 ### Add the shim to another distro
 
@@ -168,6 +171,7 @@ Other commands:
 | `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
 | `toastback doctor [--json]` | check install, registration, notification settings, WSL and the shim |
 | `toastback shim [--win-exe PATH]` | print the WSL shim |
+| `toastback notify-send [OPTION…] SUMMARY [BODY]` | notify-send's command line, see [below](#as-notify-send) |
 | `toastback --version` | version and git commit |
 
 ### From PowerShell or cmd
@@ -195,6 +199,40 @@ Type=oneshot
 ExecStart=/bin/sh -c 'n=$(dnf -q check-update | grep -c .); [ "$n" -eq 0 ] || \
   %h/.local/bin/toastback -t "Updates available" -m "$n packages can be upgraded"'
 ```
+
+### As `notify-send`
+
+`install` also writes `~/.local/bin/notify-send` next to the shim, so scripts and programs that call `notify-send` show
+Windows toasts unchanged. It runs `toastback notify-send`, which takes libnotify's `notify-send` command line:
+
+```bash
+notify-send "Backup finished" "42 GB in 12 min"
+notify-send -u critical -i dialog-error "Build failed" "<b>3</b> tests failed"
+id=$(notify-send -p "Copying…") && notify-send -r "$id" "Copy done"
+```
+
+`install` leaves a `~/.local/bin/notify-send` that isn't toastback's alone, with a note. `install --no-notify-send`
+removes the wrapper and keeps it off in later installs and upgrades; `install --notify-send` brings it back.
+`~/.local/bin` has to come before `/usr/bin` on PATH (`toastback doctor` checks it). An alias isn't enough, because
+scripts don't read your shell's aliases. Not covered: systemd services (their PATH has no `~/.local/bin`), programs
+that run `/usr/bin/notify-send` by its full path, and programs that send notifications over D-Bus themselves.
+
+| notify-send | In toastback |
+|---|---|
+| `SUMMARY [BODY]` | title and body. The body's `\n` and other escapes are applied, its markup (`<b>`, `<i>`, `<a href>`, …) is removed and entities such as `&amp;` are decoded |
+| `-u low`, `normal`, `critical` | a silent toast; a toast; the `urgent` scenario with a **Dismiss** button |
+| `-i ICON`, `-n ICON`, hint `image-path` | a PNG or JPG path or `file://` URI, or `dialog-information`, `dialog-warning`, `dialog-error` and `dialog-question` as the built-in icons. Other icon names, and images that can't be read, are left out |
+| `-a APP_NAME` | the attribution line |
+| `-e`, hint `transient` | the toast leaves the notification center after about 10 seconds |
+| `-p`, `-r ID` | print the notification's id (a number); replace the notification with that id |
+| hints `x-canonical-private-synchronous`, `x-dunst-stack-tag`, `synchronous` | a toast with the same tag replaces the previous one (volume and brightness scripts) |
+| hint `suppress-sound` | a silent toast |
+| `-t`, `-c`, other hints | accepted and ignored: Windows decides how long a toast stays on screen |
+| `-w`, `-A`, `--id-fd`, `--selected-action-fd`, `--activation-token-fd` | not supported yet: exit 1 |
+
+Errors exit 1, as in notify-send. `notify-send --version` prints `notify-send 0.8.9 (toastback X.Y.Z)`: the libnotify
+version whose command line it follows. In `toastback log`, these notifications have ids `ns-<number>`. From
+PowerShell or cmd: `toastback-cli notify-send …`.
 
 ### From Task Scheduler
 
