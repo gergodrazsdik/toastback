@@ -8,7 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 
 use crate::VERSION;
-use crate::spec::{Context, Mode, QuickFlags, Scenario};
+use crate::spec::{Context, Mode, ProgressValue, QuickFlags, Scenario, ToastDuration};
 #[cfg(windows)]
 use crate::spec::{Spec, is_safe_id};
 #[cfg(windows)]
@@ -138,6 +138,10 @@ fn attach_dash_values(args: &mut Vec<std::ffi::OsString>) {
     }
 }
 
+fn parse_progress(s: &str) -> Result<ProgressValue, String> {
+    ProgressValue::parse(s).map_err(|e| format!("{e:#}"))
+}
+
 /// Where WSL callbacks run. The WSL shim always passes these.
 #[derive(Args, Clone)]
 struct CtxArgs {
@@ -194,6 +198,15 @@ pub struct ShowArgs {
     pub mode: Option<Mode>,
     #[arg(long, value_enum)]
     pub scenario: Option<Scenario>,
+    /// How long the banner stays: short (Windows' setting) or long (about 25 s)
+    #[arg(long, value_enum)]
+    pub duration: Option<ToastDuration>,
+    /// A progress bar: 0 to 1, a percentage (40%) or indeterminate; change it with `update`
+    #[arg(long, value_parser = parse_progress, value_name = "VALUE")]
+    pub progress: Option<ProgressValue>,
+    /// The line under the progress bar
+    #[arg(long, requires = "progress", value_name = "TEXT")]
+    pub progress_status: Option<String>,
     /// Notification id (default: generated)
     #[arg(long)]
     pub id: Option<String>,
@@ -216,6 +229,9 @@ impl ShowArgs {
             icon: self.icon.clone(),
             mode: self.mode,
             scenario: self.scenario,
+            duration: self.duration,
+            progress: self.progress,
+            progress_status: self.progress_status.clone(),
         }
     }
 }
@@ -231,6 +247,23 @@ enum Command {
         /// notify-send's arguments, as given
         #[arg(skip)]
         args: Vec<std::ffi::OsString>,
+    },
+    /// Change a shown toast's progress bar in place, without a new banner (exit 5: no longer shown)
+    Update {
+        /// The notification's id
+        id: String,
+        /// The new value: 0 to 1, a percentage (40%) or indeterminate
+        #[arg(long, value_parser = parse_progress, value_name = "VALUE")]
+        progress: Option<ProgressValue>,
+        /// The line under the bar
+        #[arg(long, value_name = "TEXT")]
+        status: Option<String>,
+        /// The line above the bar (if the toast was shown with one)
+        #[arg(long, value_name = "TEXT")]
+        title: Option<String>,
+        /// Shown instead of the percentage (if the toast was shown with one)
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
     },
     /// Wait until a notification is answered, and print the answer (as `show --wait` does)
     Wait {
@@ -338,6 +371,21 @@ pub fn run(cli: Cli) -> Result<u8> {
             &ctx,
             caller.as_ref(),
         )),
+        Command::Update {
+            id,
+            progress,
+            status,
+            title,
+            label,
+        } => {
+            let change = crate::update::Change {
+                value: progress,
+                status,
+                title,
+                label,
+            };
+            Ok(crate::update::run(&store, &id, &change))
+        }
         Command::Wait { id, timeout } => {
             let limit = match timeout
                 .as_deref()

@@ -1,0 +1,10 @@
+{
+  "id": "progress-demo",
+  "title": "Copying photos",
+  "body": "From the camera to the NAS",
+  "duration": "long",
+  "progress": { "value": 0.3, "status": "Copying…", "title": "IMG_2041.jpg", "label": "3 of 10" },
+  "buttons": [
+    { "id": "cancel", "label": "Cancel", "run": { "wsl": "echo cancelled" } }
+  ]
+}

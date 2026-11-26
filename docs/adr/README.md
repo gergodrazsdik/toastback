@@ -29,6 +29,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0016](0016-settings-as-code.md) | Repository settings as code | accepted |
 | [0017](0017-notify-send.md) | notify-send: a subcommand, a wrapper installed by default, and an opt-in wait | accepted, amended by 0018 |
 | [0018](0018-wait.md) | Waiting for an answer: `--wait`, `wait ID`, and notify-send's `-w` and `-A` | accepted |
+| [0019](0019-progress-and-duration.md) | Progress bars, `toastback update`, and the banner's duration | accepted |
 
 ## Numbering and status
 

@@ -229,7 +229,13 @@ pub fn show_spec(store: &store::Store, mut spec: Spec) -> Result<String, (u8, an
                 image: pending.image_path.as_deref(),
             };
             let xml = toast::build_xml(&pending.spec, &id, &pending.token, &images);
-            if let Err(e) = toast::show(&xml, &id, pending.expires_at) {
+            let data = pending
+                .spec
+                .progress
+                .as_ref()
+                .map(toast::progress_data)
+                .unwrap_or_default();
+            if let Err(e) = toast::show(&xml, &id, pending.expires_at, &data) {
                 let _ = store.remove_pending(&id);
                 return Err(failed(e));
             }

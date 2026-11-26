@@ -14,7 +14,9 @@
 
 use std::ffi::OsString;
 
-use crate::spec::{Button, Scenario, Sound, Spec, StockIcon};
+use crate::spec::{
+    Button, Progress, ProgressValue, Scenario, Sound, Spec, StockIcon, ToastDuration,
+};
 
 /// The libnotify version whose notify-send interface this follows, for `--version`.
 pub const LIBNOTIFY_VERSION: &str = "0.8.9";
@@ -36,8 +38,8 @@ toastback's notify-send: libnotify's command line, shown as a Windows toast.
 Options:
   -?, --help                     Show this help
   -u, --urgency=LEVEL            low (silent), normal or critical (urgent, with a Dismiss button)
-  -t, --expire-time=TIME         With --wait: wait at most this many milliseconds. Windows decides
-                                 how long a toast stays on screen
+  -t, --expire-time=TIME         0 or over 10000: a long banner (about 25 s), otherwise Windows'
+                                 setting. With --wait: wait at most this many milliseconds
   -a, --app-name=APP_NAME        Shown as the toast's attribution line
   -i, --icon=ICON                A PNG or JPG path or file:// URI, or dialog-information,
                                  dialog-warning, dialog-error, dialog-question (other icon
@@ -46,7 +48,8 @@ Options:
   -c, --category=TYPE[,TYPE...]  Accepted and ignored
   -e, --transient                Leave the notification center after about 10 seconds
   -h, --hint=TYPE:NAME:VALUE     Extra data; types: boolean, int, double, string, byte, variant.
-                                 Used: urgency, image-path, suppress-sound, transient, and the
+                                 Used: urgency, image-path, suppress-sound, transient, value (a
+                                 progress bar, 0 to 100), and the
                                  stack tags x-canonical-private-synchronous, x-dunst-stack-tag
                                  and synchronous (same tag: the new toast replaces the old one)
   -p, --print-id                 Print the notification ID
@@ -330,6 +333,7 @@ fn request(raw: Raw) -> Result<Request, String> {
     let mut urgency = raw.urgency.unwrap_or(Urgency::Normal);
     let mut transient = raw.transient;
     let mut silent = false;
+    let mut percent = None;
     let mut image_path = None;
     let mut tag = None;
     // libnotify sends the hints after -u and -e, so a hint wins
@@ -344,6 +348,8 @@ fn request(raw: Raw) -> Result<Request, String> {
             }
             ("image-path" | "image_path", Hint::Str(s)) => image_path = Some(s),
             ("suppress-sound", Hint::Bool(b)) => silent = b,
+            // a percentage: volume, brightness, a download
+            ("value", Hint::Int(n)) => percent = Some(n.clamp(0, 100)),
             ("transient", Hint::Bool(b)) => transient = b,
             (
                 "x-canonical-private-synchronous"
@@ -415,6 +421,17 @@ fn request(raw: Raw) -> Result<Request, String> {
         },
         buttons,
         expires: transient.then(|| TRANSIENT_EXPIRES.into()),
+        // 0 is libnotify's "never expires": the longest banner Windows has
+        duration: match raw.expire_time {
+            Some(t) if t == 0 || t > 10_000 => ToastDuration::Long,
+            _ => ToastDuration::Short,
+        },
+        progress: percent.map(|n| Progress {
+            value: ProgressValue::Fraction(n as f64 / 100.0),
+            status: None,
+            title: None,
+            label: None,
+        }),
         ..Default::default()
     };
     // the image-path hint is the notification's image; --icon and --app-icon come after it
@@ -980,6 +997,33 @@ mod tests {
         let mut args: Vec<&str> = six.iter().map(String::as_str).collect();
         args.push("T");
         assert!(err(&args).contains("at most 5"));
+    }
+
+    #[test]
+    fn progress_and_duration() {
+        let r = req(&[
+            "-h",
+            "int:value:40",
+            "-h",
+            "string:x-dunst-stack-tag:vol",
+            "Volume",
+        ]);
+        assert_eq!(
+            r.spec.progress.as_ref().map(|p| p.value),
+            Some(ProgressValue::Fraction(0.4))
+        );
+        r.spec.validate().unwrap();
+        // clamped, like the daemons do
+        let value = |v: &str| req(&["-h", v, "T"]).spec.progress.unwrap().value;
+        assert_eq!(value("int:value:150"), ProgressValue::Fraction(1.0));
+        assert_eq!(req(&["T"]).spec.progress, None);
+
+        let duration = |args: &[&str]| req(args).spec.duration;
+        assert_eq!(duration(&["T"]), ToastDuration::Short);
+        assert_eq!(duration(&["-t", "5000", "T"]), ToastDuration::Short);
+        assert_eq!(duration(&["-t", "10001", "T"]), ToastDuration::Long);
+        assert_eq!(duration(&["-t", "0", "T"]), ToastDuration::Long);
+        assert_eq!(duration(&["-t", "-1", "T"]), ToastDuration::Short);
     }
 
     #[test]

@@ -149,6 +149,7 @@ notifications.
 ```text
 toastback [show] [FILE | -] [-t TITLE] [-m BODY] [-d DETAILS] [-i ICON]
                  [--mode toast|dialog] [--scenario default|reminder|alarm|urgent] [--id ID]
+                 [--duration short|long] [--progress VALUE [--progress-status TEXT]]
                  [--wait [--timeout DURATION]]
 ```
 
@@ -187,12 +188,31 @@ answered before `wait` started. `DURATION` is like `expires`: `90s`, `5m`, `1h30
 
 A toast whose banner times out moves to the notification center and can still be answered there; waiting goes on.
 
+### Progress bars
+
+A toast can show a progress bar (`progress` in the spec, or `--progress` with `--progress-status`), and
+`toastback update` moves it in place: no new banner, no sound. Values are `0` to `1`, a percentage (`40%`) or
+`indeterminate` (a moving bar).
+
+```bash
+id=$(toastback -t "Backup" --progress 0 --progress-status "Starting")
+toastback update "$id" --progress 40% --status "Copying photos"
+toastback update "$id" --progress 1 --status "Done"
+```
+
+`toastback update ID [--progress VALUE] [--status TEXT] [--title TEXT] [--label TEXT]` changes what you pass and
+keeps the rest. `--title` and `--label` work only if the toast was shown with a progress `title` or `label` (show it
+again with the same `--id` to add one). Exit 0: updated; 2: nothing to update, or the toast can't show it (a dialog,
+no progress bar); 3: Windows failed; 5: no longer shown (clicked, dismissed, removed or expired). Showing again with
+the same `--id` replaces the toast with a new banner instead.
+
 Other commands:
 
 | Command | What it does |
 |---|---|
 | `toastback examples [NAME]` | list the built-in example specs, or print one (`> my.json` to start your own) |
 | `toastback wait ID [--timeout DURATION]` | wait until a notification is answered, see [above](#waiting-for-an-answer) |
+| `toastback update ID [--progress VALUE] [--status TEXT] …` | move a toast's progress bar in place, see [above](#progress-bars) |
 | `toastback log [-n N] [--id ID]` | recent events: shown, clicked, callback output and exit codes |
 | `toastback validate FILE...` | check specs (and their images) without showing them; exit 2 if any is invalid |
 | `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
@@ -256,10 +276,12 @@ that run `/usr/bin/notify-send` by its full path, and programs that send notific
 | `-p`, `-r ID` | print the notification's id (a number); replace the notification with that id |
 | hints `x-canonical-private-synchronous`, `x-dunst-stack-tag`, `synchronous` | a toast with the same tag replaces the previous one (volume and brightness scripts) |
 | hint `suppress-sound` | a silent toast |
+| hint `int:value:N` | a progress bar at N % (0 to 100); with a stack tag, each new value replaces the toast |
+| `-t 0`, `-t` over 10000 | a long banner (about 25 s) |
 | `-A [NAME=]Text` | a button (at most 5); implies `-w`. The chosen action's NAME is printed (an unnamed one's number, from 1). NAME `default` is a click on the toast's text |
 | `-w` | wait until the toast is clicked or dismissed; `-t MS` limits the wait ("Wait timeout expired") |
 | `--id-fd`, `--selected-action-fd` | also write the id or the chosen action to that file descriptor (through the wrapper) |
-| `-c`, `--activation-token-fd`, other hints | accepted and ignored. `-t` without a wait too: Windows decides how long a toast stays on screen |
+| `-c`, `--activation-token-fd`, other hints | accepted and ignored. Other `-t` values without a wait too: Windows decides how long a short banner stays |
 
 Errors exit 1, and a wait exits 0 however it ends, as in notify-send. Ctrl-C during a wait removes the toast.
 `notify-send --version` prints `notify-send 0.8.9 (toastback X.Y.Z)`: the libnotify
@@ -287,6 +309,9 @@ console window.
   "attribution": "CI",              // small grey line
   "scenario": "default",            // default | reminder | alarm | urgent (reminder/alarm stay on screen; need a button)
   "sound": "default",               // default | silent | alarm | reminder
+  "duration": "short",              // banner: short (Windows' setting, 5 s by default) | long (about 25 s)
+  "progress": { "value": 0.4, "status": "Copying…", "title": "backup.tar", "label": "4 of 10" },
+                                    // toasts only: value 0-1 or "indeterminate"; title, label optional; see `update`
   "expires": "3d",                  // how long it stays clickable: s, m, h, d (e.g. 1h30m). Default 3d (toast), 7d (dialog)
   "on_click": "details",            // body click: details | default | none (default: details if set, else default)
   "buttons": [                      // up to 5
@@ -360,7 +385,7 @@ don't control (a script's output, an issue title, a file name), keep it a value,
 
 `toastback examples` lists the built-in examples, ready to copy and adapt: `simple`, `warning` (built-in icons),
 `build` (open the log, re-run, replace by id), `deploy` (details, data, a WSL callback), `export` (Windows-side
-callbacks), `reboot-dialog` (dialog mode) and `alarm`. Print one with `toastback examples NAME > my.json`, or show
+callbacks), `progress` (a progress bar to move with `update`), `reboot-dialog` (dialog mode) and `alarm`. Print one with `toastback examples NAME > my.json`, or show
 it with `toastback examples NAME | toastback`. Callback output doesn't appear anywhere on screen: read it with
 `toastback log`, or set `notify_on_success`.
 
