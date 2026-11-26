@@ -15,6 +15,112 @@ pub const CLI_EXE: &str = "toastback-cli.exe";
 /// Must match `Publisher` in the winget manifest and `CompanyName` in `res/toastback.rc`.
 pub const PUBLISHER: &str = "Gergő Drazsdik";
 
+const NOTIFY_SEND_TEMPLATE: &str = include_str!("../res/notify-send.sh.tmpl");
+/// Second-line marker of the notify-send wrapper: `install` replaces and `uninstall` deletes only
+/// a `~/.local/bin/notify-send` that carries it.
+pub const NOTIFY_SEND_MARKER: &str = "# toastback notify-send wrapper";
+
+/// Render the notify-send wrapper, which runs the shim next to it (ADR 0017).
+pub fn render_notify_send(version: &str) -> String {
+    NOTIFY_SEND_TEMPLATE
+        .replace('\r', "")
+        .replace("{{VERSION}}", version)
+}
+
+/// What `install` did to `~/.local/bin/notify-send` in a distro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifySendResult {
+    Wrote,
+    /// A file that isn't ours is there: left alone.
+    Kept,
+    Removed,
+    Unchanged,
+}
+
+/// The `sh -c` script that writes the shim (read from stdin) and prints `$HOME`. Then, with a
+/// `wrapper`, it writes `~/.local/bin/notify-send` unless a file that isn't ours is there;
+/// without one, it removes ours. It prints `notify-send=<what it did>`.
+pub fn write_script(wrapper: Option<&str>) -> String {
+    let ours = format!(r#"head -n 2 "$f" 2>/dev/null | grep -q '{NOTIFY_SEND_MARKER}'"#);
+    let notify_send = match wrapper {
+        Some(w) => format!(
+            "if {{ [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; }} || {ours}; then\n  \
+             cat > \"$f\" <<'TOASTBACK_EOF' && chmod +x \"$f\" && echo notify-send=wrote\n\
+             {w}TOASTBACK_EOF\nelse\n  echo notify-send=kept\nfi\n"
+        ),
+        None => format!("if {ours}; then rm -f \"$f\" && echo notify-send=removed; fi\n"),
+    };
+    format!(
+        r#"d="$HOME/.local/bin"
+mkdir -p "$d" && cat > "$d/toastback" && chmod +x "$d/toastback" || exit 1
+printf '%s\n' "$HOME"
+f="$d/notify-send"
+{notify_send}"#
+    )
+}
+
+/// `$HOME` and what happened to notify-send, from [`write_script`]'s output.
+pub fn parse_write_output(out: &str) -> (String, NotifySendResult) {
+    let mut lines = out.lines();
+    let home = lines.next().unwrap_or_default().to_string();
+    let result = match lines.find_map(|l| l.strip_prefix("notify-send=")) {
+        Some("wrote") => NotifySendResult::Wrote,
+        Some("kept") => NotifySendResult::Kept,
+        Some("removed") => NotifySendResult::Removed,
+        _ => NotifySendResult::Unchanged,
+    };
+    (home, result)
+}
+
+/// In the user's login shell: what `notify-send` runs, then `PATH`. A profile's own output comes
+/// before them; [`parse_path_output`] skips it.
+pub const PATH_SCRIPT: &str = r#"exec "${SHELL:-/bin/sh}" -lc 'printf "%s\n" "$(command -v notify-send)"; printf %s "$PATH"'"#;
+
+/// `(PATH, what notify-send runs)` from [`PATH_SCRIPT`]'s output.
+pub fn parse_path_output(out: &str) -> (String, String) {
+    match out.rsplit_once('\n') {
+        Some((before, path)) => (
+            path.to_string(),
+            before.lines().last().unwrap_or_default().to_string(),
+        ),
+        None => (out.to_string(), String::new()),
+    }
+}
+
+/// For `doctor`: the wrapper's path, what the login shell's `notify-send` runs, and the file.
+pub const NOTIFY_SEND_STATUS_SCRIPT: &str = r#"f="$HOME/.local/bin/notify-send"
+r=$("${SHELL:-/bin/sh}" -lc 'command -v notify-send' </dev/null 2>/dev/null | tail -n 1)
+printf '%s\n%s\n' "$f" "$r"
+if [ -f "$f" ]; then printf y; cat "$f"; fi"#;
+
+/// [`NOTIFY_SEND_STATUS_SCRIPT`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotifySendStatus {
+    pub path: String,
+    pub resolved: String,
+    pub content: Option<String>,
+}
+
+impl NotifySendStatus {
+    pub fn parse(out: &str) -> NotifySendStatus {
+        let mut parts = out.splitn(3, '\n');
+        let mut next = || parts.next().unwrap_or_default().to_string();
+        let (path, resolved, rest) = (next(), next(), next());
+        NotifySendStatus {
+            path,
+            resolved,
+            content: rest.strip_prefix('y').map(str::to_string),
+        }
+    }
+
+    /// Is the file there toastback's wrapper?
+    pub fn is_ours(&self) -> bool {
+        self.content
+            .as_deref()
+            .is_some_and(|c| c.lines().take(2).any(|l| l.contains(NOTIFY_SEND_MARKER)))
+    }
+}
+
 /// Render the WSL shim for an installed exe at `win_exe` (a Windows path).
 pub fn render_shim(version: &str, win_exe: &str) -> String {
     // the path sits in single quotes: close, escaped quote, reopen
@@ -228,9 +334,11 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, PUBLISHER, SHIM_MARKER, has_distro, is_stale_copy, moved_aside_name,
-        parse_default_distro, parse_distro_list, path_with, path_without, protocol_command,
-        render_shim, same_distro, uninstall_command,
+        CLI_EXE, GUI_EXE, NOTIFY_SEND_MARKER, NOTIFY_SEND_STATUS_SCRIPT, NotifySendResult,
+        NotifySendStatus, PATH_SCRIPT, PUBLISHER, SHIM_MARKER, has_distro, is_stale_copy,
+        moved_aside_name, parse_default_distro, parse_distro_list, parse_path_output,
+        parse_write_output, path_with, path_without, protocol_command, render_notify_send,
+        render_shim, same_distro, uninstall_command, write_script,
     };
     use crate::exec::{Drain, OUTPUT_GRACE};
     use crate::registry::{self, Kind};
@@ -259,6 +367,9 @@ mod imp {
         /// A distro name, `all`, `default`, `none`, or `None`: see [`super::shim_targets`].
         pub wsl: Option<&'a str>,
         pub add_to_path: bool,
+        /// Write the notify-send wrapper (`Some(true)`), remove it (`Some(false)`), or do what the
+        /// last install did (`None`; by default, write it).
+        pub notify_send: Option<bool>,
     }
 
     pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
@@ -270,6 +381,9 @@ mod imp {
         };
         let previous = readable_record(store);
         let previously_declined = previous.as_ref().is_some_and(InstallRecord::shims_declined);
+        let notify_send = opts
+            .notify_send
+            .unwrap_or(!previous.as_ref().is_some_and(|r| r.no_notify_send));
         // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
         // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
         let plan = super::shim_targets(opts.wsl, ctx, previous.as_ref(), listed, default_distro);
@@ -361,9 +475,11 @@ mod imp {
         });
 
         let shim = render_shim(version, &exe.to_string_lossy());
+        let wrapper = notify_send.then(|| render_notify_send(version));
+        record.no_notify_send = !notify_send;
         let mut failed = Vec::new();
         for t in &targets {
-            match write_shim(t, &shim) {
+            match write_shim(t, &shim, wrapper.as_deref()) {
                 Ok(()) => {
                     // the same distro under another spelling replaces the old entry
                     record
@@ -617,6 +733,15 @@ mod imp {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// `~/.local/bin/notify-send` in a distro, and what the login shell's `notify-send` runs.
+    pub fn read_notify_send(t: &ShimTarget) -> Result<NotifySendStatus> {
+        Ok(NotifySendStatus::parse(&wsl_sh(
+            t,
+            NOTIFY_SEND_STATUS_SCRIPT,
+            None,
+        )?))
+    }
+
     /// The shim currently installed in a distro, if any.
     pub fn read_shim(t: &ShimTarget) -> Result<Option<String>> {
         let out = wsl_sh(
@@ -627,23 +752,49 @@ mod imp {
         Ok(out.strip_prefix('y').map(str::to_string))
     }
 
-    fn write_shim(t: &ShimTarget, shim: &str) -> Result<()> {
-        let script = r#"mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/toastback" && chmod +x "$HOME/.local/bin/toastback" && printf %s "$HOME""#;
-        let home = wsl_sh(t, script, Some(shim))?;
+    /// Write the shim, and the notify-send wrapper (`wrapper`) or remove ours (`None`).
+    fn write_shim(t: &ShimTarget, shim: &str, wrapper: Option<&str>) -> Result<()> {
+        let out = wsl_sh(t, &write_script(wrapper), Some(shim))?;
+        let (home, notify_send) = parse_write_output(&out);
         let who = t
             .user
             .as_deref()
             .map_or(String::new(), |u| format!(" ({u})"));
         outln!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
+        let wrapper_path = format!("{home}/.local/bin/notify-send");
+        match notify_send {
+            NotifySendResult::Wrote => {
+                outln!(
+                    "wrote {wrapper_path} in {}{who}: notify-send shows Windows toasts",
+                    t.distro
+                );
+                // shells remember where they found a command: an open one may still run the old one
+                outln!("  in terminals that are already open, run `hash -r` (zsh: `rehash`) first");
+            }
+            NotifySendResult::Kept => outln!(
+                "  note: left {wrapper_path} in {} alone: it isn't toastback's (move it away and install again to use toastback's)",
+                t.distro
+            ),
+            NotifySendResult::Removed => {
+                outln!("removed toastback's {wrapper_path} in {}", t.distro)
+            }
+            NotifySendResult::Unchanged if wrapper.is_some() => {
+                errln!("warning: couldn't write {wrapper_path} in {}", t.distro)
+            }
+            NotifySendResult::Unchanged => {}
+        }
         // the user's login shell decides PATH; zsh users set it in .zshenv, bash users in .profile
-        let path = wsl_sh(
-            t,
-            r#"exec "${SHELL:-/bin/sh}" -lc 'printf %s "$PATH"'"#,
-            None,
-        );
+        let path = wsl_sh(t, PATH_SCRIPT, None).map(|out| parse_path_output(&out));
         let bin = format!("{home}/.local/bin");
         match path {
-            Ok(path) if path.split(':').any(|p| p == bin || p == "~/.local/bin") => {}
+            Ok((path, resolved)) if path.split(':').any(|p| p == bin || p == "~/.local/bin") => {
+                if notify_send == NotifySendResult::Wrote && resolved != wrapper_path {
+                    outln!(
+                        "  note: notify-send in {} still runs {resolved}, which comes before {bin} on PATH",
+                        t.distro
+                    );
+                }
+            }
             Ok(_) => outln!(
                 "  note: {bin} is not on PATH in {}; add it to your shell profile",
                 t.distro
@@ -656,15 +807,19 @@ mod imp {
         Ok(())
     }
 
-    /// Remove the shim from a distro (only a file with our marker), and say how it went. Returns
-    /// false if that couldn't be checked.
+    /// Remove the shim and the notify-send wrapper from a distro (only files with our markers),
+    /// and say how it went. Returns false if that couldn't be checked.
     fn remove_shim(t: &ShimTarget) -> bool {
         let script = format!(
-            r#"f="$HOME/.local/bin/toastback"; if head -n 2 "$f" 2>/dev/null | grep -q '{SHIM_MARKER}'; then rm -f "$f" && echo removed; fi"#
+            r#"f="$HOME/.local/bin/toastback"; if head -n 2 "$f" 2>/dev/null | grep -q '{SHIM_MARKER}'; then rm -f "$f" && echo removed; fi
+n="$HOME/.local/bin/notify-send"; if head -n 2 "$n" 2>/dev/null | grep -q '{NOTIFY_SEND_MARKER}'; then rm -f "$n" && echo notify-send=removed; fi"#
         );
         match wsl_sh(t, &script, None) {
             Ok(out) => {
-                if out.contains("removed") {
+                if out.lines().any(|l| l == "notify-send=removed") {
+                    outln!("removed the notify-send wrapper in {}", t.distro);
+                }
+                if out.lines().any(|l| l == "removed") {
                     outln!("removed the shim in {}", t.distro);
                 } else {
                     outln!("no toastback shim in {}", t.distro);
@@ -867,6 +1022,117 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_send_wrapper_runs_the_shim() {
+        let w = render_notify_send("1.5.0");
+        assert!(w.starts_with("#!/bin/sh\n"));
+        assert!(w.lines().nth(1).unwrap().starts_with(NOTIFY_SEND_MARKER));
+        assert!(w.contains("toastback 1.5.0"));
+        assert!(w.ends_with("exec \"$HOME/.local/bin/toastback\" notify-send \"$@\"\n"));
+        assert!(!w.contains('\r') && !w.contains("TOASTBACK_EOF"));
+    }
+
+    #[test]
+    fn parses_script_output() {
+        let (home, r) = parse_write_output("/home/g\nnotify-send=kept\n");
+        assert_eq!((home.as_str(), r), ("/home/g", NotifySendResult::Kept));
+        assert_eq!(
+            parse_write_output("/home/g\n").1,
+            NotifySendResult::Unchanged
+        );
+        // profile output before the answers is skipped
+        assert_eq!(
+            parse_path_output("Welcome!\n/home/g/.local/bin/notify-send\n/usr/bin:/bin"),
+            (
+                "/usr/bin:/bin".to_string(),
+                "/home/g/.local/bin/notify-send".to_string()
+            )
+        );
+        assert_eq!(
+            parse_path_output("\n/usr/bin"),
+            ("/usr/bin".to_string(), String::new())
+        );
+        let s = NotifySendStatus::parse("/h/.local/bin/notify-send\n/usr/bin/notify-send\n");
+        assert_eq!(s.resolved, "/usr/bin/notify-send");
+        assert_eq!(s.content, None);
+        let ours = render_notify_send("1.5.0");
+        let s = NotifySendStatus::parse(&format!("/h/n\n\ny{ours}"));
+        assert_eq!(s.content.as_deref(), Some(ours.as_str()));
+        assert!(s.is_ours());
+        assert!(!NotifySendStatus::parse("/h/n\n\ny#!/bin/sh\nmine\n").is_ours());
+    }
+
+    /// The install script in a real `sh`, with a scratch `$HOME`.
+    #[cfg(unix)]
+    #[test]
+    fn write_script_respects_a_notify_send_that_isnt_ours() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let home = std::env::temp_dir().join(format!("toastback-ns-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let run = |wrapper: Option<&str>| {
+            let mut child = Command::new("sh")
+                .args(["-c", &write_script(wrapper)])
+                .env("HOME", &home)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"#!/bin/sh\n# shim\n")
+                .unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            parse_write_output(&String::from_utf8(out.stdout).unwrap())
+        };
+        let bin = home.join(".local/bin");
+        let wrapper = render_notify_send("1.5.0");
+        let ns = bin.join("notify-send");
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+
+        // nothing there: written, executable, next to the shim
+        let (h, r) = run(Some(&wrapper));
+        assert_eq!(
+            (h, r),
+            (home.to_string_lossy().into_owned(), NotifySendResult::Wrote)
+        );
+        assert_eq!(read(&bin.join("toastback")), "#!/bin/sh\n# shim\n");
+        assert_eq!(read(&ns), wrapper);
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&ns).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+        // ours: replaced by a newer one
+        let newer = render_notify_send("1.6.0");
+        assert_eq!(run(Some(&newer)).1, NotifySendResult::Wrote);
+        assert_eq!(read(&ns), newer);
+        // declined: ours is removed
+        assert_eq!(run(None).1, NotifySendResult::Removed);
+        assert!(!ns.exists());
+        assert_eq!(run(None).1, NotifySendResult::Unchanged);
+        // someone else's (a file, a dangling link): left alone, also when declined
+        std::fs::write(&ns, "#!/bin/sh\necho mine\n").unwrap();
+        assert_eq!(run(Some(&wrapper)).1, NotifySendResult::Kept);
+        assert_eq!(run(None).1, NotifySendResult::Unchanged);
+        assert_eq!(read(&ns), "#!/bin/sh\necho mine\n");
+        std::fs::remove_file(&ns).unwrap();
+        std::os::unix::fs::symlink(home.join("nowhere"), &ns).unwrap();
+        assert_eq!(run(Some(&wrapper)).1, NotifySendResult::Kept);
+        assert!(
+            std::fs::symlink_metadata(&ns)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn shim_renders() {

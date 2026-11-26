@@ -82,6 +82,9 @@ pub struct InstallRecord {
     pub no_shims: Option<bool>,
     #[serde(default)]
     pub path_added: bool,
+    /// `install --no-notify-send` was chosen: later installs don't write the wrapper either.
+    #[serde(default)]
+    pub no_notify_send: bool,
 }
 
 impl InstallRecord {

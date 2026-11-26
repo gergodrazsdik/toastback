@@ -58,6 +58,7 @@ mod doctor;
 mod examples;
 mod exec;
 mod install;
+mod notify_send;
 #[cfg(windows)]
 mod registry;
 mod show;

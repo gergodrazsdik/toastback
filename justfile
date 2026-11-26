@@ -149,7 +149,7 @@ pin:
 [group('lint')]
 lint-sh:
     git ls-files -z '*.sh' | xargs -0 scripts/with-tool.sh shellcheck
-    scripts/with-tool.sh shellcheck -s sh res/shim.sh.tmpl
+    scripts/with-tool.sh shellcheck -s sh res/shim.sh.tmpl res/notify-send.sh.tmpl
 
 # Check spelling (typos)
 [group('lint')]
