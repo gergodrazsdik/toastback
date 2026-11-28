@@ -62,6 +62,7 @@ mod notify_send;
 #[cfg(windows)]
 mod registry;
 mod show;
+mod skill;
 mod spec;
 mod store;
 mod toast;

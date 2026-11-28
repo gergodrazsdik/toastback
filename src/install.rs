@@ -27,14 +27,26 @@ pub fn render_notify_send(version: &str) -> String {
         .replace("{{VERSION}}", version)
 }
 
-/// What `install` did to `~/.local/bin/notify-send` in a distro.
+/// What `install` did to a file it manages in a distro: `~/.local/bin/notify-send`, the skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotifySendResult {
+pub enum FileResult {
     Wrote,
     /// A file that isn't ours is there: left alone.
     Kept,
     Removed,
     Unchanged,
+}
+
+impl FileResult {
+    /// The answer on the first line that starts with `prefix` (`notify-send=wrote`).
+    fn parse<'a>(mut lines: impl Iterator<Item = &'a str>, prefix: &str) -> FileResult {
+        match lines.find_map(|l| l.strip_prefix(prefix)) {
+            Some("wrote") => FileResult::Wrote,
+            Some("kept") => FileResult::Kept,
+            Some("removed") => FileResult::Removed,
+            _ => FileResult::Unchanged,
+        }
+    }
 }
 
 /// The `sh -c` script that writes the shim (read from stdin) and prints `$HOME`. Then, with a
@@ -60,16 +72,40 @@ f="$d/notify-send"
 }
 
 /// `$HOME` and what happened to notify-send, from [`write_script`]'s output.
-pub fn parse_write_output(out: &str) -> (String, NotifySendResult) {
+pub fn parse_write_output(out: &str) -> (String, FileResult) {
     let mut lines = out.lines();
     let home = lines.next().unwrap_or_default().to_string();
-    let result = match lines.find_map(|l| l.strip_prefix("notify-send=")) {
-        Some("wrote") => NotifySendResult::Wrote,
-        Some("kept") => NotifySendResult::Kept,
-        Some("removed") => NotifySendResult::Removed,
-        _ => NotifySendResult::Unchanged,
+    (home, FileResult::parse(lines, "notify-send="))
+}
+
+/// The `sh -c` script for the agent skill (ADR 0021): with `write`, it writes the skill (read from
+/// stdin) unless a `SKILL.md` that isn't ours is there; without, it removes ours. It prints the
+/// file's path, then `skill=<what it did>`.
+pub fn skill_script(write: bool) -> String {
+    let path = crate::skill::SKILL_PATH;
+    let marker = crate::skill::MARKER;
+    let lines = crate::skill::MARKER_LINES;
+    let ours = format!(r#"sed -n '1,{lines}p' "$f" 2>/dev/null | grep -qF '{marker}'"#);
+    let action = if write {
+        format!(
+            "if {{ [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; }} || {ours}; then\n  \
+             mkdir -p \"${{f%/*}}\" && cat > \"$f\" && echo skill=wrote\n\
+             else\n  cat >/dev/null; echo skill=kept\nfi\n"
+        )
+    } else {
+        format!(
+            "if {ours}; then\n  rm -f \"$f\" && echo skill=removed\n  \
+             rmdir \"${{f%/*}}\" 2>/dev/null || :\nfi\n"
+        )
     };
-    (home, result)
+    format!("f=\"$HOME/{path}\"\nprintf '%s\\n' \"$f\"\n{action}")
+}
+
+/// The skill's path and what happened to it, from [`skill_script`]'s output.
+pub fn parse_skill_output(out: &str) -> (String, FileResult) {
+    let mut lines = out.lines();
+    let path = lines.next().unwrap_or_default().to_string();
+    (path, FileResult::parse(lines, "skill="))
 }
 
 /// In the user's login shell: what `notify-send` runs, then `PATH`. A profile's own output comes
@@ -334,11 +370,12 @@ mod imp {
     use windows::core::{PWSTR, w};
 
     use super::{
-        CLI_EXE, GUI_EXE, NOTIFY_SEND_MARKER, NOTIFY_SEND_STATUS_SCRIPT, NotifySendResult,
+        CLI_EXE, FileResult, GUI_EXE, NOTIFY_SEND_MARKER, NOTIFY_SEND_STATUS_SCRIPT,
         NotifySendStatus, PATH_SCRIPT, PUBLISHER, SHIM_MARKER, has_distro, is_stale_copy,
         moved_aside_name, parse_default_distro, parse_distro_list, parse_path_output,
-        parse_write_output, path_with, path_without, protocol_command, render_notify_send,
-        render_shim, same_distro, uninstall_command, write_script,
+        parse_skill_output, parse_write_output, path_with, path_without, protocol_command,
+        render_notify_send, render_shim, same_distro, skill_script, uninstall_command,
+        write_script,
     };
     use crate::exec::{Drain, OUTPUT_GRACE};
     use crate::registry::{self, Kind};
@@ -370,6 +407,9 @@ mod imp {
         /// Write the notify-send wrapper (`Some(true)`), remove it (`Some(false)`), or do what the
         /// last install did (`None`; by default, write it).
         pub notify_send: Option<bool>,
+        /// Write the agent skill (`Some(true)`), remove it (`Some(false)`), or do what the last
+        /// install did (`None`; by default, nothing).
+        pub skill: Option<bool>,
     }
 
     pub fn install(store: &Store, opts: &Options, ctx: &Context, version: &str) -> Result<()> {
@@ -384,6 +424,8 @@ mod imp {
         let notify_send = opts
             .notify_send
             .unwrap_or(!previous.as_ref().is_some_and(|r| r.no_notify_send));
+        let had_skill = previous.as_ref().is_some_and(|r| r.skill);
+        let skill = opts.skill.unwrap_or(had_skill);
         // Where the shim goes, before anything changes: an explicit `--wsl all` that can't list
         // the distros fails here, with nothing half-installed. By default, no WSL is a warning.
         let plan = super::shim_targets(opts.wsl, ctx, previous.as_ref(), listed, default_distro);
@@ -477,10 +519,20 @@ mod imp {
         let shim = render_shim(version, &exe.to_string_lossy());
         let wrapper = notify_send.then(|| render_notify_send(version));
         record.no_notify_send = !notify_send;
+        // the skill: written when chosen, removed when turned off (else nothing to do there)
+        let skill_text = skill.then(|| crate::skill::render(version));
+        let skill_action = (skill || had_skill || opts.skill == Some(false)).then_some(skill_text);
+        record.skill = skill;
         let mut failed = Vec::new();
         for t in &targets {
             match write_shim(t, &shim, wrapper.as_deref()) {
                 Ok(()) => {
+                    // the shim is in place: a skill that can't be written is only a warning
+                    if let Some(text) = &skill_action
+                        && let Err(e) = write_skill(t, text.as_deref())
+                    {
+                        errln!("warning: agent skill in {}: {e:#}", t.distro);
+                    }
                     // the same distro under another spelling replaces the old entry
                     record
                         .shims
@@ -742,6 +794,14 @@ mod imp {
         )?))
     }
 
+    /// The agent skill in a distro, if there is a file at its path.
+    pub fn read_skill(t: &ShimTarget) -> Result<Option<String>> {
+        let path = crate::skill::SKILL_PATH;
+        let script = format!(r#"f="$HOME/{path}"; if [ -f "$f" ]; then printf y; cat "$f"; fi"#);
+        let out = wsl_sh(t, &script, None)?;
+        Ok(out.strip_prefix('y').map(str::to_string))
+    }
+
     /// The shim currently installed in a distro, if any.
     pub fn read_shim(t: &ShimTarget) -> Result<Option<String>> {
         let out = wsl_sh(
@@ -763,7 +823,7 @@ mod imp {
         outln!("wrote {home}/.local/bin/toastback in {}{who}", t.distro);
         let wrapper_path = format!("{home}/.local/bin/notify-send");
         match notify_send {
-            NotifySendResult::Wrote => {
+            FileResult::Wrote => {
                 outln!(
                     "wrote {wrapper_path} in {}{who}: notify-send shows Windows toasts",
                     t.distro
@@ -771,24 +831,24 @@ mod imp {
                 // shells remember where they found a command: an open one may still run the old one
                 outln!("  in terminals that are already open, run `hash -r` (zsh: `rehash`) first");
             }
-            NotifySendResult::Kept => outln!(
+            FileResult::Kept => outln!(
                 "  note: left {wrapper_path} in {} alone: it isn't toastback's (move it away and install again to use toastback's)",
                 t.distro
             ),
-            NotifySendResult::Removed => {
+            FileResult::Removed => {
                 outln!("removed toastback's {wrapper_path} in {}", t.distro)
             }
-            NotifySendResult::Unchanged if wrapper.is_some() => {
+            FileResult::Unchanged if wrapper.is_some() => {
                 errln!("warning: couldn't write {wrapper_path} in {}", t.distro)
             }
-            NotifySendResult::Unchanged => {}
+            FileResult::Unchanged => {}
         }
         // the user's login shell decides PATH; zsh users set it in .zshenv, bash users in .profile
         let path = wsl_sh(t, PATH_SCRIPT, None).map(|out| parse_path_output(&out));
         let bin = format!("{home}/.local/bin");
         match path {
             Ok((path, resolved)) if path.split(':').any(|p| p == bin || p == "~/.local/bin") => {
-                if notify_send == NotifySendResult::Wrote && resolved != wrapper_path {
+                if notify_send == FileResult::Wrote && resolved != wrapper_path {
                     outln!(
                         "  note: notify-send in {} still runs {resolved}, which comes before {bin} on PATH",
                         t.distro
@@ -807,17 +867,41 @@ mod imp {
         Ok(())
     }
 
+    /// Write the agent skill (`Some`), or remove ours (`None`), and say how it went.
+    fn write_skill(t: &ShimTarget, skill: Option<&str>) -> Result<()> {
+        let out = wsl_sh(t, &skill_script(skill.is_some()), skill)?;
+        let (path, result) = parse_skill_output(&out);
+        match result {
+            FileResult::Wrote => outln!("wrote the agent skill {path} in {}", t.distro),
+            FileResult::Kept => outln!(
+                "  note: left {path} in {} alone: it isn't toastback's (move it away and install again to use toastback's)",
+                t.distro
+            ),
+            FileResult::Removed => outln!("removed the agent skill {path} in {}", t.distro),
+            FileResult::Unchanged if skill.is_some() => {
+                errln!("warning: couldn't write {path} in {}", t.distro)
+            }
+            FileResult::Unchanged => {}
+        }
+        Ok(())
+    }
+
     /// Remove the shim and the notify-send wrapper from a distro (only files with our markers),
     /// and say how it went. Returns false if that couldn't be checked.
     fn remove_shim(t: &ShimTarget) -> bool {
         let script = format!(
             r#"f="$HOME/.local/bin/toastback"; if head -n 2 "$f" 2>/dev/null | grep -q '{SHIM_MARKER}'; then rm -f "$f" && echo removed; fi
-n="$HOME/.local/bin/notify-send"; if head -n 2 "$n" 2>/dev/null | grep -q '{NOTIFY_SEND_MARKER}'; then rm -f "$n" && echo notify-send=removed; fi"#
+n="$HOME/.local/bin/notify-send"; if head -n 2 "$n" 2>/dev/null | grep -q '{NOTIFY_SEND_MARKER}'; then rm -f "$n" && echo notify-send=removed; fi
+{}"#,
+            skill_script(false)
         );
         match wsl_sh(t, &script, None) {
             Ok(out) => {
                 if out.lines().any(|l| l == "notify-send=removed") {
                     outln!("removed the notify-send wrapper in {}", t.distro);
+                }
+                if out.lines().any(|l| l == "skill=removed") {
+                    outln!("removed the agent skill in {}", t.distro);
                 }
                 if out.lines().any(|l| l == "removed") {
                     outln!("removed the shim in {}", t.distro);
@@ -1095,11 +1179,8 @@ mod tests {
     #[test]
     fn parses_script_output() {
         let (home, r) = parse_write_output("/home/g\nnotify-send=kept\n");
-        assert_eq!((home.as_str(), r), ("/home/g", NotifySendResult::Kept));
-        assert_eq!(
-            parse_write_output("/home/g\n").1,
-            NotifySendResult::Unchanged
-        );
+        assert_eq!((home.as_str(), r), ("/home/g", FileResult::Kept));
+        assert_eq!(parse_write_output("/home/g\n").1, FileResult::Unchanged);
         // profile output before the answers is skipped
         assert_eq!(
             parse_path_output("Welcome!\n/home/g/.local/bin/notify-send\n/usr/bin:/bin"),
@@ -1159,7 +1240,7 @@ mod tests {
         let (h, r) = run(Some(&wrapper));
         assert_eq!(
             (h, r),
-            (home.to_string_lossy().into_owned(), NotifySendResult::Wrote)
+            (home.to_string_lossy().into_owned(), FileResult::Wrote)
         );
         assert_eq!(read(&bin.join("toastback")), "#!/bin/sh\n# shim\n");
         assert_eq!(read(&ns), wrapper);
@@ -1170,26 +1251,80 @@ mod tests {
         );
         // ours: replaced by a newer one
         let newer = render_notify_send("1.6.0");
-        assert_eq!(run(Some(&newer)).1, NotifySendResult::Wrote);
+        assert_eq!(run(Some(&newer)).1, FileResult::Wrote);
         assert_eq!(read(&ns), newer);
         // declined: ours is removed
-        assert_eq!(run(None).1, NotifySendResult::Removed);
+        assert_eq!(run(None).1, FileResult::Removed);
         assert!(!ns.exists());
-        assert_eq!(run(None).1, NotifySendResult::Unchanged);
+        assert_eq!(run(None).1, FileResult::Unchanged);
         // someone else's (a file, a dangling link): left alone, also when declined
         std::fs::write(&ns, "#!/bin/sh\necho mine\n").unwrap();
-        assert_eq!(run(Some(&wrapper)).1, NotifySendResult::Kept);
-        assert_eq!(run(None).1, NotifySendResult::Unchanged);
+        assert_eq!(run(Some(&wrapper)).1, FileResult::Kept);
+        assert_eq!(run(None).1, FileResult::Unchanged);
         assert_eq!(read(&ns), "#!/bin/sh\necho mine\n");
         std::fs::remove_file(&ns).unwrap();
         std::os::unix::fs::symlink(home.join("nowhere"), &ns).unwrap();
-        assert_eq!(run(Some(&wrapper)).1, NotifySendResult::Kept);
+        assert_eq!(run(Some(&wrapper)).1, FileResult::Kept);
         assert!(
             std::fs::symlink_metadata(&ns)
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// The skill script in a real `sh`, with a scratch `$HOME`.
+    #[cfg(unix)]
+    #[test]
+    fn skill_script_writes_replaces_and_removes_only_ours() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let home = std::env::temp_dir().join(format!("toastback-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let run = |skill: Option<&str>| {
+            let mut child = Command::new("sh")
+                .args(["-c", &skill_script(skill.is_some())])
+                .env("HOME", &home)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(skill.unwrap_or("").as_bytes()).unwrap();
+            drop(stdin);
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            parse_skill_output(&String::from_utf8(out.stdout).unwrap())
+        };
+        let file = home.join(crate::skill::SKILL_PATH);
+        let read = || std::fs::read_to_string(&file).unwrap();
+        let skill = crate::skill::render("1.6.0");
+
+        // nothing there: the directories and the file are written
+        let (path, r) = run(Some(&skill));
+        assert_eq!(
+            (path, r),
+            (file.to_string_lossy().into_owned(), FileResult::Wrote)
+        );
+        assert_eq!(read(), skill);
+        // ours: replaced by a newer one
+        let newer = crate::skill::render("1.7.0");
+        assert_eq!(run(Some(&newer)).1, FileResult::Wrote);
+        assert_eq!(read(), newer);
+        // turned off: ours is removed, with its directory, and only once
+        assert_eq!(run(None).1, FileResult::Removed);
+        assert!(!file.exists() && !file.parent().unwrap().exists());
+        assert!(home.join(".claude/skills").exists());
+        assert_eq!(run(None).1, FileResult::Unchanged);
+        // someone else's: left alone, also when turned off
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "---\nname: toastback\n---\nmine\n").unwrap();
+        assert_eq!(run(Some(&skill)).1, FileResult::Kept);
+        assert_eq!(run(None).1, FileResult::Unchanged);
+        assert_eq!(read(), "---\nname: toastback\n---\nmine\n");
         std::fs::remove_dir_all(&home).unwrap();
     }
 

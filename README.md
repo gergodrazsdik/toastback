@@ -139,6 +139,8 @@ Other `install` options:
 | `--quiet` | skip the test notification |
 | `--no-notify-send` | don't write the [`notify-send` wrapper](#as-notify-send), and remove ours; later installs keep it off |
 | `--notify-send` | write the wrapper again after an earlier `--no-notify-send` |
+| `--skill` | also write the [agent skill](#for-coding-agents) to `~/.claude/skills/toastback/`; later installs keep it current |
+| `--no-skill` | remove the agent skill that `--skill` wrote, and stop writing it |
 
 ### Add the shim to another distro
 
@@ -239,6 +241,7 @@ Other commands:
 | `toastback remove ID...` / `toastback clear` | take notifications out of the notification center; their buttons stop working |
 | `toastback doctor [--json]` | check install, registration, notification settings, WSL and the shim |
 | `toastback shim [--win-exe PATH]` | print the WSL shim |
+| `toastback skill` | print the [agent skill](#for-coding-agents) |
 | `toastback notify-send [OPTION…] SUMMARY [BODY]` | notify-send's command line, see [below](#as-notify-send) |
 | `toastback --version` | version and git commit |
 
@@ -308,6 +311,17 @@ Errors exit 1, and a wait exits 0 however it ends, as in notify-send. Ctrl-C dur
 `notify-send --version` prints `notify-send 0.8.9 (toastback X.Y.Z)`: the libnotify
 version whose command line it follows. In `toastback log`, these notifications have ids `ns-<number>`. From
 PowerShell or cmd: `toastback-cli notify-send …`.
+
+### For coding agents
+
+`toastback skill` prints a skill for coding agents such as Claude Code and Codex: a `SKILL.md` that says when to use
+`--wait`, `update` or `notify-send`, how a spec is built, what the exit codes mean and which mistakes to avoid. It's
+built into the exe, so it always matches the installed version.
+
+`toastback install --skill` writes it to `~/.claude/skills/toastback/SKILL.md` in each distro that gets the shim,
+where Claude Code finds it. The choice is remembered: later installs and upgrades rewrite it for the new version.
+`install --no-skill` removes it, and `uninstall` does too. A `SKILL.md` there that isn't toastback's is left alone. For
+another agent, save it where that agent reads skills: `toastback skill > <dir>/toastback/SKILL.md`.
 
 ### From Task Scheduler
 

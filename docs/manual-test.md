@@ -197,6 +197,17 @@ covered by the smoke job, so here they only need to be checked once.
     https://github.com/gergodrazsdik/scoop-bucket`, `scoop install gergodrazsdik/toastback`, `toastback-cli doctor`,
     then `scoop uninstall toastback`.
 
+## Agent skill
+
+59. `toastback skill` prints the skill: it starts with `---` and `name: toastback`, and its marker line names the
+    installed version. `toastback install --skill --quiet` prints "wrote the agent skill
+    …/.claude/skills/toastback/SKILL.md in <distro>", and the file is the same as `toastback skill`'s output.
+    `toastback doctor` has an "agent skill (<distro>)" line: current. A plain `toastback install --quiet` rewrites it.
+    Replace the file with your own text: `install` leaves it alone with a note, and `doctor` warns. Restore it
+    (`toastback skill > ~/.claude/skills/toastback/SKILL.md`), then `toastback install --no-skill --quiet`: the
+    file and its folder are gone, and `doctor` no longer lists it. With `--skill` on again, `toastback uninstall`
+    removes it too.
+
 ## Uninstall
 
 26. `toastback uninstall`: the shim, the registry keys, the PATH entry and `bin\` are gone, and a new terminal no longer

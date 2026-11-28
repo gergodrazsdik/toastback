@@ -32,6 +32,7 @@ CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md SUPPORT.md
 Cargo.toml Cargo.lock rust-toolchain.toml build.rs .cargo/config.toml
 justfile  local.just.example  lefthook.yml  .editorconfig  lint configs
 src/                 lib.rs (toastback::main()), main.rs (toastback.exe), bin/toastback-cli.rs, one module per concern
+skills/toastback/    SKILL.md, the agent skill: embedded by src/skill.rs (`toastback skill`, `install --skill`)
 res/                 the Windows resources (manifest, icon, version info), status icons, the WSL shim and notify-send wrapper templates
 examples/            example specs; src/examples.rs registers them as built-in or repo-only
 scripts/             install.sh (release asset), bump.sh, package.sh, winget.sh, scoop.sh, make-icon.sh, with-tool.sh,

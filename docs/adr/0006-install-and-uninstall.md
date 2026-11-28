@@ -1,6 +1,7 @@
 # 0006: Install and uninstall: recorded shims, marked files, PATH, uninstall while running
 
-- Status: accepted, amended by [0017](0017-notify-send.md) (the notify-send wrapper)
+- Status: accepted, amended by [0017](0017-notify-send.md) (the notify-send wrapper), [0021](0021-agent-skill.md)
+  (the agent skill)
 - Date: 2026-10-14
 
 ## Context and problem statement

@@ -292,6 +292,12 @@ enum Command {
         /// Write ~/.local/bin/notify-send again after an earlier --no-notify-send
         #[arg(long)]
         notify_send: bool,
+        /// Also write the agent skill to ~/.claude/skills/toastback/, now and in later installs
+        #[arg(long, conflicts_with = "no_skill")]
+        skill: bool,
+        /// Remove the agent skill that --skill wrote, and stop writing it
+        #[arg(long)]
+        no_skill: bool,
     },
     /// Remove everything `install` set up
     Uninstall {
@@ -310,6 +316,8 @@ enum Command {
         /// Example to print (save it with `>`, or pipe it into `toastback`)
         name: Option<String>,
     },
+    /// Print the agent skill: how to use toastback, for coding agents (SKILL.md)
+    Skill,
     /// Check specs without showing them
     Validate {
         /// JSON spec files (- for stdin)
@@ -412,15 +420,19 @@ pub fn run(cli: Cli) -> Result<u8> {
             quiet,
             no_notify_send,
             notify_send,
+            skill,
+            no_skill,
         } => {
+            let choice = |off: bool, on: bool| match (off, on) {
+                (true, _) => Some(false),
+                (_, true) => Some(true),
+                _ => None,
+            };
             let opts = install::Options {
                 wsl: wsl.as_deref(),
                 add_to_path,
-                notify_send: match (no_notify_send, notify_send) {
-                    (true, _) => Some(false),
-                    (_, true) => Some(true),
-                    _ => None,
-                },
+                notify_send: choice(no_notify_send, notify_send),
+                skill: choice(no_skill, skill),
             };
             install::install(&store, &opts, &ctx, env!("CARGO_PKG_VERSION"))?;
             if quiet {
@@ -462,6 +474,10 @@ pub fn run(cli: Cli) -> Result<u8> {
                 Ok(show::EXIT_INVALID)
             }
         },
+        Command::Skill => {
+            out!("{}", crate::skill::render(env!("CARGO_PKG_VERSION")));
+            Ok(0)
+        }
         Command::Validate { files } => {
             let mut bad = 0;
             for file in &files {
