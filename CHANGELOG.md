@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An agent skill: `toastback skill` prints a `SKILL.md` for coding agents (when to use `--wait`, `update` or
+  `notify-send`, the spec, exit codes, common mistakes) that matches the installed version. `install --skill` writes
+  it to `~/.claude/skills/toastback/` in each distro that gets the shim, and later installs and upgrades keep it
+  current; `install --no-skill` removes it. `uninstall` removes it, and `doctor` checks it.
+
 ## [1.5.0] - 2026-11-26
 
 ### Added

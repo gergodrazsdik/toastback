@@ -16,7 +16,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0003](0003-terminal-output.md) | Terminal output: attach the parent console, plus a console-subsystem `toastback-cli.exe` | accepted |
 | [0004](0004-running-callbacks.md) | Running callbacks: `wsl.exe --exec`, encoded PowerShell, raw cmd, one click per notification | accepted, amended by 0014 |
 | [0005](0005-spec-and-cli.md) | Spec and CLI: the spec's context wins, `show` is the default command, WSL paths | accepted |
-| [0006](0006-install-and-uninstall.md) | Install and uninstall: recorded shims, marked files, PATH, uninstall while running | accepted, amended by 0017 |
+| [0006](0006-install-and-uninstall.md) | Install and uninstall: recorded shims, marked files, PATH, uninstall while running | accepted, amended by 0017, 0021 |
 | [0007](0007-dialogs.md) | Dialogs: TaskDialog mapping, on top, a detached dialog process, one callback path | accepted |
 | [0008](0008-commands-and-click-feedback.md) | Commands and click feedback: `validate`, `remove`, `clear`, `doctor`, `notify_on_success` | accepted |
 | [0009](0009-installer-and-line-endings.md) | Installer and line endings: a script that survives a pipe, LF everywhere | accepted |
@@ -31,6 +31,7 @@ The first fourteen were rewritten on 2026-11-26 from the milestone notes kept in
 | [0018](0018-wait.md) | Waiting for an answer: `--wait`, `wait ID`, and notify-send's `-w` and `-A` | accepted |
 | [0019](0019-progress-and-duration.md) | Progress bars, `toastback update`, and the banner's duration | accepted |
 | [0020](0020-scoop.md) | Scoop: a bucket of our own, with the same nested install as winget | accepted |
+| [0021](0021-agent-skill.md) | An agent skill in the exe: `toastback skill` and `install --skill` | accepted |
 
 ## Numbering and status
 

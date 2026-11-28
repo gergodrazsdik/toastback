@@ -89,6 +89,9 @@ pub struct InstallRecord {
     /// `install --no-notify-send` was chosen: later installs don't write the wrapper either.
     #[serde(default)]
     pub no_notify_send: bool,
+    /// `install --skill` was chosen: later installs rewrite the agent skill too (ADR 0021).
+    #[serde(default)]
+    pub skill: bool,
 }
 
 impl InstallRecord {

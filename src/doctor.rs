@@ -86,6 +86,30 @@ pub fn notify_send_check(
     (Status::Ok, format!("{} shows toasts", s.path))
 }
 
+/// The agent skill in the caller's distro, after `install --skill` (ADR 0021).
+pub fn skill_check(content: Option<&str>, version: &str) -> (Status, String) {
+    match content {
+        None => (
+            Status::Warn,
+            "missing: run `toastback.exe install` (or `install --no-skill` to turn it off)".into(),
+        ),
+        Some(c) if !crate::skill::is_ours(c) => (
+            Status::Warn,
+            format!(
+                "~/{} isn't toastback's, so install left it alone",
+                crate::skill::SKILL_PATH
+            ),
+        ),
+        Some(c) if c != crate::skill::render(version) => {
+            (Status::Warn, "outdated: run `toastback.exe install`".into())
+        }
+        Some(_) => (
+            Status::Ok,
+            format!("~/{} is current", crate::skill::SKILL_PATH),
+        ),
+    }
+}
+
 #[cfg(windows)]
 pub use imp::run;
 
@@ -264,6 +288,16 @@ mod imp {
                 }
                 Err(e) => Check::new(name, Warn, format!("{e:#}")),
             });
+            if record.as_ref().is_some_and(|r| r.skill) {
+                let name = format!("agent skill ({distro})");
+                checks.push(match install::read_skill(&target) {
+                    Ok(content) => {
+                        let (status, detail) = super::skill_check(content.as_deref(), version);
+                        Check::new(name, status, detail)
+                    }
+                    Err(e) => Check::new(name, Warn, format!("{e:#}")),
+                });
+            }
         }
 
         let probe = store.root().join("doctor.tmp");
@@ -326,6 +360,20 @@ mod tests {
         );
         let detail = notify_send_check(&status(Some(&ours), ""), false, "1.5.0").1;
         assert!(detail.contains("not on PATH"), "{detail}");
+    }
+
+    #[test]
+    fn skill_states() {
+        let ours = crate::skill::render("1.6.0");
+        assert_eq!(skill_check(Some(&ours), "1.6.0").0, Status::Ok);
+        let (s, detail) = skill_check(Some(&crate::skill::render("1.5.0")), "1.6.0");
+        assert_eq!((s, detail.starts_with("outdated")), (Status::Warn, true));
+        let (s, detail) = skill_check(Some("---\nname: mine\n---\n"), "1.6.0");
+        assert_eq!(
+            (s, detail.contains("isn't toastback's")),
+            (Status::Warn, true)
+        );
+        assert!(skill_check(None, "1.6.0").1.starts_with("missing"));
     }
 
     #[test]
